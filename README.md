@@ -17,7 +17,7 @@ When you move an article to "Later" in Reader, the worker receives a webhook, fe
 ```sh
 npm install
 npx wrangler login
-npx wrangler deploy
+npm run deploy
 ```
 
 ### 2. Set secrets
