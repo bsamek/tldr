@@ -109,7 +109,7 @@ async function summarize(title: string, content: string, apiKey: string): Promis
 			messages: [
 				{
 					role: "user",
-					content: `Summarize the following article in 3-5 concise prose paragraphs to help me decide whether to read it fully. Write in plain prose — no headers, no bold labels, no bullet points. Just flowing paragraphs.
+					content: `Summarize the following article in 3-5 concise prose paragraphs. Write in plain prose — no headers, no bold labels, no bullet points. Just flowing paragraphs.
 
 Article title: ${title}
 
