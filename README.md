@@ -24,6 +24,7 @@ npm run deploy
 
 ```sh
 npx wrangler secret put READWISE_TOKEN      # https://readwise.io/access_token
+npx wrangler secret put READWISE_WEBHOOK_SECRET  # must match the webhook secret configured in Readwise
 npx wrangler secret put ANTHROPIC_API_KEY    # Claude API key
 npx wrangler secret put RESEND_API_KEY       # https://resend.com
 npx wrangler secret put EMAIL_TO             # your email address
@@ -34,6 +35,7 @@ npx wrangler secret put ARCHIVE_LINK_SECRET  # random signing secret for Later/a
 
 In Readwise Reader settings, create a webhook:
 - **URL:** `https://readwise-summary.<your-subdomain>.workers.dev/webhook`
+- **Secret:** use the same value you stored in `READWISE_WEBHOOK_SECRET`
 - **Events:**
   - `Reader Non-Feed Document Created`
   - `Reader Document Moved To Inbox`
