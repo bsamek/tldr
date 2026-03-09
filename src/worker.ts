@@ -46,7 +46,24 @@ const INLINE_SKIP_PATTERNS = [
 	/^\s*was this email forwarded to you\?\b/i,
 ];
 
-const QUOTED_REPLY_PATTERNS = [/^\s*on .+ wrote:\s*$/i, /^\s*>+/, /^\s*from:\s+/i];
+const QUOTED_REPLY_PATTERNS = [/^\s*on .+ wrote:\s*$/i, /^\s*>+/];
+
+const FORWARDED_MESSAGE_PATTERNS = [
+	/^\s*-{2,}\s*forwarded message\s*-{2,}\s*$/i,
+	/^\s*begin forwarded message:?$/i,
+];
+
+const FORWARDED_HEADER_PATTERNS = [
+	/^\s*from:\s+/i,
+	/^\s*date:\s+/i,
+	/^\s*subject:\s+/i,
+	/^\s*to:\s+/i,
+	/^\s*cc:\s+/i,
+	/^\s*reply-to:\s+/i,
+	/^\s*sent:\s+/i,
+];
+
+const FORWARDED_SUBJECT_PATTERNS = [/^\s*fwd:\s+/i, /^\s*fw:\s+/i];
 
 const IGNORED_URL_HOSTS = new Set([
 	"facebook.com",
@@ -270,38 +287,12 @@ export function getEmailMetadata(
 }
 
 export function extractSummaryContent(metadata: EmailMetadata): string {
-	const baseText = normalizeText(metadata.text || stripHtml(metadata.html || ""));
-	if (!baseText) {
-		return "";
-	}
+	const candidates = [metadata.text || "", stripHtml(metadata.html || "")]
+		.map((value) => cleanSummaryText(value, metadata.subject))
+		.filter(Boolean)
+		.sort((left, right) => right.length - left.length);
 
-	const lines = baseText.split("\n");
-	const cleaned: string[] = [];
-
-	for (const line of lines) {
-		const trimmed = line.trim();
-
-		if (!trimmed) {
-			cleaned.push("");
-			continue;
-		}
-
-		if (INLINE_SKIP_PATTERNS.some((pattern) => pattern.test(trimmed))) {
-			continue;
-		}
-
-		if (QUOTED_REPLY_PATTERNS.some((pattern) => pattern.test(trimmed))) {
-			break;
-		}
-
-		if (FOOTER_BREAK_PATTERNS.some((pattern) => pattern.test(trimmed))) {
-			break;
-		}
-
-		cleaned.push(trimmed);
-	}
-
-	return collapseWhitespace(cleaned.join("\n")).slice(0, MAX_SUMMARY_INPUT_CHARS);
+	return (candidates[0] || "").slice(0, MAX_SUMMARY_INPUT_CHARS);
 }
 
 export function extractOriginalArticleUrl(
@@ -665,9 +656,124 @@ function stripHtml(html: string): string {
 			.replace(/<style[\s\S]*?<\/style>/gi, " ")
 			.replace(/<script[\s\S]*?<\/script>/gi, " ")
 			.replace(/<br\s*\/?>/gi, "\n")
-			.replace(/<\/(p|div|section|article|li|h[1-6])>/gi, "\n")
+			.replace(/<\/(p|div|section|article|li|h[1-6]|tr|table|tbody|thead|blockquote)>/gi, "\n")
 			.replace(/<[^>]+>/g, " "),
 	);
+}
+
+function cleanSummaryText(value: string, subject: string): string {
+	const baseText = normalizeText(value);
+	if (!baseText) {
+		return "";
+	}
+
+	const lines = baseText.split("\n");
+	const cleaned: string[] = [];
+
+	for (let index = 0; index < lines.length; index += 1) {
+		const trimmed = lines[index].trim();
+
+		if (!trimmed) {
+			cleaned.push("");
+			continue;
+		}
+
+		if (FORWARDED_MESSAGE_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+			index = skipForwardedHeaderBlock(lines, index + 1);
+			continue;
+		}
+
+		if (
+			isLikelyForwardedHeaderBlockStart(lines, index, subject, cleaned.length > 0)
+		) {
+			index = skipForwardedHeaderBlock(lines, index);
+			continue;
+		}
+
+		if (INLINE_SKIP_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+			continue;
+		}
+
+		if (QUOTED_REPLY_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+			break;
+		}
+
+		if (FOOTER_BREAK_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+			break;
+		}
+
+		cleaned.push(trimmed);
+	}
+
+	return collapseWhitespace(cleaned.join("\n"));
+}
+
+function isLikelyForwardedHeaderBlockStart(
+	lines: string[],
+	startIndex: number,
+	subject: string,
+	hasCollectedContent: boolean,
+): boolean {
+	if (
+		hasCollectedContent &&
+		!FORWARDED_SUBJECT_PATTERNS.some((pattern) => pattern.test(subject))
+	) {
+		return false;
+	}
+
+	let headerCount = 0;
+
+	for (
+		let index = startIndex;
+		index < lines.length && index < startIndex + 8;
+		index += 1
+	) {
+		const rawLine = lines[index];
+		const trimmed = rawLine.trim();
+
+		if (!trimmed) {
+			break;
+		}
+
+		if (FORWARDED_HEADER_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+			headerCount += 1;
+			continue;
+		}
+
+		if (/^[ \t]+/.test(rawLine) && headerCount > 0) {
+			continue;
+		}
+
+		break;
+	}
+
+	return headerCount >= 2;
+}
+
+function skipForwardedHeaderBlock(lines: string[], startIndex: number): number {
+	let sawHeader = false;
+
+	for (let index = startIndex; index < lines.length; index += 1) {
+		const rawLine = lines[index];
+		const trimmed = rawLine.trim();
+
+		if (!trimmed) {
+			return sawHeader ? index : startIndex - 1;
+		}
+
+		if (FORWARDED_HEADER_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+			sawHeader = true;
+			continue;
+		}
+
+		if (/^[ \t]+/.test(rawLine) && sawHeader) {
+			continue;
+		}
+
+		return sawHeader ? index - 1 : startIndex - 1;
+	}
+
+	return lines.length;
 }
 
 function collapseWhitespace(value: string): string {
