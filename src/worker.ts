@@ -1,7 +1,7 @@
 import PostalMime, { type Address, type Email as ParsedEmail } from "postal-mime";
 
 export interface Env {
-	ANTHROPIC_API_KEY: string;
+	OPENAI_API_KEY: string;
 	RESEND_API_KEY: string;
 	EMAIL_TO: string;
 	SUMMARY_FROM: string;
@@ -19,10 +19,13 @@ export interface EmailMetadata {
 }
 
 const HEALTH_PATH = "/healthz";
-const MAX_SUMMARY_CHARS = 80_000;
+// App-side guardrail for cost and latency; GPT-5.4 can handle far more context.
+const MAX_SUMMARY_INPUT_CHARS = 80_000;
 const DEDUPE_TTL_SECONDS = 60 * 60 * 24 * 7;
 const MAX_URL_UNWRAPS = 3;
 const SUMMARY_PREFIX = "Newsletter Summary";
+const SUMMARY_MODEL = "gpt-5.4";
+const SUMMARY_MAX_OUTPUT_TOKENS = 1024;
 
 const FOOTER_BREAK_PATTERNS = [
 	/^\s*unsubscribe\b/i,
@@ -212,7 +215,7 @@ export async function processIncomingEmail(
 			sourceUrl,
 			content,
 		},
-		env.ANTHROPIC_API_KEY,
+		env.OPENAI_API_KEY,
 	);
 
 	await sendSummaryEmail(
@@ -298,7 +301,7 @@ export function extractSummaryContent(metadata: EmailMetadata): string {
 		cleaned.push(trimmed);
 	}
 
-	return collapseWhitespace(cleaned.join("\n")).slice(0, MAX_SUMMARY_CHARS);
+	return collapseWhitespace(cleaned.join("\n")).slice(0, MAX_SUMMARY_INPUT_CHARS);
 }
 
 export function extractOriginalArticleUrl(
@@ -413,43 +416,61 @@ export async function summarizeEmail(
 	},
 	apiKey: string,
 ): Promise<string> {
-	const resp = await fetch("https://api.anthropic.com/v1/messages", {
+	const resp = await fetch("https://api.openai.com/v1/responses", {
 		method: "POST",
 		headers: {
-			"x-api-key": apiKey,
-			"anthropic-version": "2023-06-01",
-			"content-type": "application/json",
+			Authorization: `Bearer ${apiKey}`,
+			"Content-Type": "application/json",
 		},
 		body: JSON.stringify({
-			model: "claude-sonnet-4-6",
-			max_tokens: 1024,
-			messages: [
+			model: SUMMARY_MODEL,
+			reasoning: {
+				effort: "none",
+			},
+			max_output_tokens: SUMMARY_MAX_OUTPUT_TOKENS,
+			instructions:
+				"Summarize the following forwarded newsletter or article email in 3-5 concise prose paragraphs. Write in plain prose with no headers, no labels, and no bullet points.",
+			input: [
 				{
 					role: "user",
-					content: `Summarize the following forwarded newsletter or article email in 3-5 concise prose paragraphs. Write in plain prose with no headers, no labels, and no bullet points.
-
-Email subject: ${input.subject}
+					content: [
+						{
+							type: "input_text",
+							text: `Email subject: ${input.subject}
 Email sender: ${input.sender}
 Original article URL: ${input.sourceUrl || "Unavailable"}
 
 Email content:
-${input.content.slice(0, MAX_SUMMARY_CHARS)}`,
+${input.content.slice(0, MAX_SUMMARY_INPUT_CHARS)}`,
+						},
+					],
 				},
 			],
 		}),
 	});
 
 	if (!resp.ok) {
-		throw new Error(`Claude API error: ${resp.status} ${await resp.text()}`);
+		throw new Error(
+			`OpenAI Responses API error: ${resp.status} ${await resp.text()}`,
+		);
 	}
 
 	const data = (await resp.json()) as {
-		content: { type: string; text: string }[];
+		output?: {
+			type: string;
+			content?: {
+				type: string;
+				text?: string;
+			}[];
+		}[];
 	};
-	const summary = data.content.find((item) => item.type === "text")?.text?.trim();
+	const summary = data.output
+		?.flatMap((item) => (item.type === "message" ? item.content || [] : []))
+		.find((item) => item.type === "output_text")
+		?.text?.trim();
 
 	if (!summary) {
-		throw new Error("Claude API returned no text content");
+		throw new Error("OpenAI Responses API returned no text content");
 	}
 
 	return summary;

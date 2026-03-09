@@ -5,10 +5,10 @@ A Cloudflare Worker that summarizes forwarded newsletter emails and sends a per-
 ## How It Works
 
 ```text
-Gmail Filter -> Cloudflare Email Routing -> Worker -> Anthropic -> Resend -> Gmail
+Gmail Filter -> Cloudflare Email Routing -> Worker -> OpenAI -> Resend -> Gmail
 ```
 
-Gmail keeps the original newsletter in your inbox. A Gmail filter forwards matching senders to a Cloudflare-managed email address, the Worker parses the message body, asks Anthropic for a 3-5 paragraph summary, and Resend sends the summary back to you. Each summary email includes a link to the original article URL when the Worker can extract one confidently.
+Gmail keeps the original newsletter in your inbox. A Gmail filter forwards matching senders to a Cloudflare-managed email address, the Worker parses the message body, asks OpenAI `gpt-5.4` for a 3-5 paragraph summary with `reasoning.effort` set to `none`, and Resend sends the summary back to you. Each summary email includes a link to the original article URL when the Worker can extract one confidently.
 
 ## Setup
 
@@ -19,7 +19,7 @@ npm install
 npx wrangler login
 ```
 
-Create the KV namespaces and copy the returned IDs into [wrangler.toml](/Users/brian/src/readwise/wrangler.toml):
+Create the KV namespaces and copy the returned IDs into `wrangler.toml`:
 
 ```sh
 npx wrangler kv namespace create PROCESSED_EMAILS
@@ -35,7 +35,7 @@ npm run deploy
 ### 2. Set Worker secrets
 
 ```sh
-npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler secret put OPENAI_API_KEY
 npx wrangler secret put RESEND_API_KEY
 npx wrangler secret put EMAIL_TO
 npx wrangler secret put SUMMARY_FROM
@@ -43,6 +43,7 @@ npx wrangler secret put SUMMARY_FROM
 
 - `EMAIL_TO`: the Gmail address that should receive summary emails.
 - `SUMMARY_FROM`: a verified Resend sender on your domain. The Worker sends `Newsletter Summary <SUMMARY_FROM>`.
+- The Worker currently truncates extracted email text to 80,000 characters before summarization and caps model output at 1,024 tokens. Those are application guardrails for cost and latency, not GPT-5.4 model limits.
 
 ### 3. Configure Cloudflare Email Routing
 

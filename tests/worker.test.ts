@@ -90,7 +90,7 @@ function createForwardableEmailMessage(rawEmail: string): ForwardableEmailMessag
 
 function createEnv(overrides?: Partial<Env>): Env {
 	return {
-		ANTHROPIC_API_KEY: "anthropic-test-key",
+		OPENAI_API_KEY: "openai-test-key",
 		RESEND_API_KEY: "resend-test-key",
 		EMAIL_TO: "me@example.com",
 		SUMMARY_FROM: "summary@example.com",
@@ -208,10 +208,17 @@ describe("dedupe processing", () => {
 
 	it("processes the same email only once", async () => {
 		fetchMock.mockImplementation(async (input) => {
-			if (typeof input === "string" && input.includes("anthropic.com")) {
+			if (typeof input === "string" && input.includes("api.openai.com")) {
 				return new Response(
 					JSON.stringify({
-						content: [{ type: "text", text: "A concise summary." }],
+						output: [
+							{
+								type: "message",
+								content: [
+									{ type: "output_text", text: "A concise summary." },
+								],
+							},
+						],
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				);
@@ -244,5 +251,19 @@ describe("dedupe processing", () => {
 		expect(resendCall?.[1]?.headers).toMatchObject({
 			"Idempotency-Key": expect.stringMatching(/^email:[a-f0-9]{64}$/),
 		});
+
+		const openAiCall = fetchMock.mock.calls.find(
+			([input]) => typeof input === "string" && input.includes("api.openai.com"),
+		);
+		expect(openAiCall).toBeTruthy();
+		expect(openAiCall?.[1]?.body).toEqual(
+			expect.stringContaining('"model":"gpt-5.4"'),
+		);
+		expect(openAiCall?.[1]?.body).toEqual(
+			expect.stringContaining('"reasoning":{"effort":"none"}'),
+		);
+		expect(openAiCall?.[1]?.body).toEqual(
+			expect.stringContaining('"max_output_tokens":1024'),
+		);
 	});
 });
