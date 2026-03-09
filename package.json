@@ -1,5 +1,5 @@
 {
-  "name": "readwise-summary-worker",
+  "name": "tldr-worker",
   "version": "1.0.0",
   "private": true,
   "scripts": {

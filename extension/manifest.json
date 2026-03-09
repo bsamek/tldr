@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Readwise Summary",
+  "name": "TLDR",
   "version": "1.0.0",
   "description": "Extract and summarize articles from the current page",
   "permissions": ["activeTab", "scripting", "storage"],
