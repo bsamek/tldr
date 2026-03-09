@@ -3,6 +3,7 @@ import PostalMime, { type Address, type Email as ParsedEmail } from "postal-mime
 
 export interface Env {
 	OPENAI_API_KEY: string;
+	ANTHROPIC_API_KEY: string;
 	RESEND_API_KEY: string;
 	EMAIL_TO: string;
 	SUMMARY_FROM: string;
@@ -46,6 +47,7 @@ const MAX_SUMMARY_INPUT_CHARS = 80_000;
 const DEDUPE_TTL_SECONDS = 60 * 60 * 24 * 7;
 const SUMMARY_PREFIX = "Newsletter Summary";
 const SUMMARY_MODEL = "gpt-5.4";
+const HAIKU_MODEL = "claude-haiku-4-5";
 const SUMMARY_MAX_OUTPUT_TOKENS = 1024;
 
 const FOOTER_BREAK_PATTERNS = [
@@ -198,20 +200,21 @@ export async function handleApiSave(
 	const truncatedContent = body.content.slice(0, MAX_SUMMARY_INPUT_CHARS);
 	const sender = body.siteName || new URL(body.url).hostname;
 
-	const summary = await summarizeEmail(
+	const summaries = await summarizeDual(
 		{
 			subject: body.title,
 			sender,
 			content: truncatedContent,
 		},
 		env.OPENAI_API_KEY,
+		env.ANTHROPIC_API_KEY,
 	);
 
 	await sendSummaryEmail(
 		{
 			subject: body.title,
 			sender,
-			summary,
+			...summaries,
 		},
 		env,
 		dedupeKey,
@@ -304,20 +307,21 @@ export async function processIncomingEmail(
 		return;
 	}
 
-	const summary = await summarizeEmail(
+	const summaries = await summarizeDual(
 		{
 			subject: metadata.subject,
 			sender: formatSender(metadata),
 			content,
 		},
 		env.OPENAI_API_KEY,
+		env.ANTHROPIC_API_KEY,
 	);
 
 	await sendSummaryEmail(
 		{
 			subject: metadata.subject,
 			sender: formatSender(metadata),
-			summary,
+			...summaries,
 		},
 		env,
 		dedupeKey,
@@ -467,11 +471,77 @@ ${input.content.slice(0, MAX_SUMMARY_INPUT_CHARS)}`,
 	return summary;
 }
 
+export async function summarizeWithHaiku(
+	input: {
+		subject: string;
+		sender: string;
+		content: string;
+	},
+	apiKey: string,
+): Promise<string> {
+	const resp = await fetch("https://api.anthropic.com/v1/messages", {
+		method: "POST",
+		headers: {
+			"x-api-key": apiKey,
+			"anthropic-version": "2023-06-01",
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({
+			model: HAIKU_MODEL,
+			max_tokens: SUMMARY_MAX_OUTPUT_TOKENS,
+			system:
+				"Summarize the following forwarded newsletter or article email in 3-5 concise prose paragraphs. Write in plain prose with no headers, no labels, and no bullet points.",
+			messages: [
+				{
+					role: "user",
+					content: `Email subject: ${input.subject}\nEmail sender: ${input.sender}\n\nEmail content:\n${input.content.slice(0, MAX_SUMMARY_INPUT_CHARS)}`,
+				},
+			],
+		}),
+	});
+
+	if (!resp.ok) {
+		throw new Error(
+			`Anthropic Messages API error: ${resp.status} ${await resp.text()}`,
+		);
+	}
+
+	const data = (await resp.json()) as {
+		content?: { type: string; text?: string }[];
+	};
+	const summary = data.content
+		?.find((block) => block.type === "text")
+		?.text?.trim();
+
+	if (!summary) {
+		throw new Error("Anthropic Messages API returned no text content");
+	}
+
+	return summary;
+}
+
+export async function summarizeDual(
+	input: {
+		subject: string;
+		sender: string;
+		content: string;
+	},
+	openaiApiKey: string,
+	anthropicApiKey: string,
+): Promise<{ gptSummary: string; haikuSummary: string }> {
+	const [gptSummary, haikuSummary] = await Promise.all([
+		summarizeEmail(input, openaiApiKey),
+		summarizeWithHaiku(input, anthropicApiKey),
+	]);
+	return { gptSummary, haikuSummary };
+}
+
 export async function sendSummaryEmail(
 	input: {
 		subject: string;
 		sender: string;
-		summary: string;
+		gptSummary: string;
+		haikuSummary: string;
 	},
 	env: Env,
 	dedupeKey: string,
@@ -492,17 +562,19 @@ export async function sendSummaryEmail(
 export function renderSummaryHtml(input: {
 	subject: string;
 	sender: string;
-	summary: string;
+	gptSummary: string;
+	haikuSummary: string;
 }): string {
-	const summaryParagraphs = input.summary
-		.split(/\n\s*\n/)
-		.map((paragraph) => paragraph.trim())
-		.filter(Boolean)
-		.map(
-			(paragraph) =>
-				`<p style="margin:0 0 16px; line-height:1.7; color:#1f2937;">${escapeHtml(paragraph).replace(/\n/g, "<br>")}</p>`,
-		)
-		.join("");
+	const renderParagraphs = (text: string) =>
+		text
+			.split(/\n\s*\n/)
+			.map((paragraph) => paragraph.trim())
+			.filter(Boolean)
+			.map(
+				(paragraph) =>
+					`<p style="margin:0 0 16px; line-height:1.7; color:#1f2937;">${escapeHtml(paragraph).replace(/\n/g, "<br>")}</p>`,
+			)
+			.join("");
 
 	return `<!doctype html>
 <html lang="en">
@@ -511,7 +583,11 @@ export function renderSummaryHtml(input: {
       <p style="margin:0 0 12px; font-size:12px; letter-spacing:0.12em; text-transform:uppercase; color:#9a6b2f;">${SUMMARY_PREFIX}</p>
       <h1 style="margin:0 0 12px; font-size:30px; line-height:1.2; color:#111827;">${escapeHtml(input.subject)}</h1>
       <p style="margin:0 0 24px; line-height:1.6; color:#4b5563;">From ${escapeHtml(input.sender)}</p>
-      ${summaryParagraphs}
+      <h2 style="margin:0 0 12px; font-size:16px; letter-spacing:0.06em; text-transform:uppercase; color:#9a6b2f;">GPT-5.4</h2>
+      ${renderParagraphs(input.gptSummary)}
+      <hr style="border:none; border-top:1px solid #e5dccf; margin:24px 0;">
+      <h2 style="margin:0 0 12px; font-size:16px; letter-spacing:0.06em; text-transform:uppercase; color:#9a6b2f;">Haiku 4.5</h2>
+      ${renderParagraphs(input.haikuSummary)}
     </div>
   </body>
 </html>`;
@@ -520,9 +596,23 @@ export function renderSummaryHtml(input: {
 export function renderSummaryText(input: {
 	subject: string;
 	sender: string;
-	summary: string;
+	gptSummary: string;
+	haikuSummary: string;
 }): string {
-	return [input.summary.trim(), "", "---", `From: ${input.sender}`].join("\n");
+	return [
+		"## GPT-5.4",
+		"",
+		input.gptSummary.trim(),
+		"",
+		"---",
+		"",
+		"## Haiku 4.5",
+		"",
+		input.haikuSummary.trim(),
+		"",
+		"---",
+		`From: ${input.sender}`,
+	].join("\n");
 }
 
 export function renderForwardingConfirmationHtml(input: {
@@ -902,20 +992,21 @@ export async function processRssFeeds(env: Env): Promise<void> {
 					continue;
 				}
 
-				const summary = await summarizeEmail(
+				const summaries = await summarizeDual(
 					{
 						subject: item.title,
 						sender: item.feedName,
 						content: item.content,
 					},
 					env.OPENAI_API_KEY,
+					env.ANTHROPIC_API_KEY,
 				);
 
 				await sendSummaryEmail(
 					{
 						subject: item.title,
 						sender: item.feedName,
-						summary,
+						...summaries,
 					},
 					env,
 					dedupeKey,

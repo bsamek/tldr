@@ -5,16 +5,18 @@ A Cloudflare Worker that summarizes forwarded newsletter emails and RSS feed art
 ## How It Works
 
 ```text
-Gmail Filter -> Cloudflare Email Routing -> Worker -> OpenAI -> Resend -> Gmail
-Cron (every 30 min)  -> RSS Feeds        -> Worker -> OpenAI -> Resend -> Gmail
-Chrome Extension -> Readability.js       -> Worker -> OpenAI -> Resend -> Gmail
+Gmail Filter -> Cloudflare Email Routing -> Worker -> OpenAI + Anthropic -> Resend -> Gmail
+Cron (every 30 min)  -> RSS Feeds        -> Worker -> OpenAI + Anthropic -> Resend -> Gmail
+Chrome Extension -> Readability.js       -> Worker -> OpenAI + Anthropic -> Resend -> Gmail
 ```
 
-**Email path:** Gmail keeps the original newsletter in your inbox. A Gmail filter forwards matching senders to a Cloudflare-managed email address, the Worker parses the message body, asks OpenAI `gpt-5.4` for a 3-5 paragraph summary with `reasoning.effort` set to `none`, and Resend sends the summary back to you.
+**Dual-model summaries:** Each article is summarized by both OpenAI `gpt-5.4` and Anthropic `claude-haiku-4-5` in parallel. The summary email displays both results side by side with model labels so you can compare them.
 
-**RSS path:** A Cloudflare Cron Trigger runs every 30 minutes, fetches configured RSS/Atom feeds, extracts new articles, summarizes them with the same OpenAI pipeline, and emails the summaries via Resend. Already-processed items are skipped using the same KV dedup store.
+**Email path:** Gmail keeps the original newsletter in your inbox. A Gmail filter forwards matching senders to a Cloudflare-managed email address, the Worker parses the message body, summarizes with both models, and Resend sends the summary back to you.
 
-**Chrome extension path:** A Manifest V3 Chrome extension lets you save any article — including paywalled pages you're logged into — by clicking "Summarize This Page." The extension uses Mozilla's Readability.js to extract the article content in-browser, then POSTs it to the Worker's `POST /api/save` endpoint with Bearer token auth. The Worker deduplicates, summarizes, and emails the result.
+**RSS path:** A Cloudflare Cron Trigger runs every 30 minutes, fetches configured RSS/Atom feeds, extracts new articles, summarizes them with both models, and emails the summaries via Resend. Already-processed items are skipped using the same KV dedup store.
+
+**Chrome extension path:** A Manifest V3 Chrome extension lets you save any article — including paywalled pages you're logged into — by clicking "Summarize This Page." The extension uses Mozilla's Readability.js to extract the article content in-browser, then POSTs it to the Worker's `POST /api/save` endpoint with Bearer token auth. The Worker deduplicates, summarizes with both models, and emails the result.
 
 ## Setup
 
@@ -42,6 +44,7 @@ npm run deploy
 
 ```sh
 npx wrangler secret put OPENAI_API_KEY
+npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put RESEND_API_KEY
 npx wrangler secret put EMAIL_TO
 npx wrangler secret put SUMMARY_FROM
@@ -125,8 +128,3 @@ Forward one newsletter sender to the Cloudflare address and confirm:
 - the summary email has no action buttons
 
 Use `npx wrangler tail` to stream Worker logs while testing.
-
-## Backlog
-
-- Remove Readwise completely later.
-- Add a Safari share sheet flow on iOS.
