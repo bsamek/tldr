@@ -63,7 +63,7 @@ npx wrangler secret put RSS_FEEDS
 # Enter: [{"url":"https://example.com/feed.xml","name":"Example Blog"}]
 ```
 
-Or set it in `wrangler.toml` under `[vars]` for non-sensitive feeds. The cron trigger runs every 30 minutes and processes up to 5 new items per feed per run.
+**Do not** put your feed list in `wrangler.toml` — use `wrangler secret put` so it stays out of version control. The cron trigger runs every 30 minutes and processes up to 5 new items per feed per run.
 
 ### 4. Configure Cloudflare Email Routing
 
