@@ -45,7 +45,8 @@ const HEALTH_PATH = "/healthz";
 // App-side guardrail for cost and latency; GPT-5.4 can handle far more context.
 const MAX_SUMMARY_INPUT_CHARS = 80_000;
 const DEDUPE_TTL_SECONDS = 60 * 60 * 24 * 7;
-const SUMMARY_PREFIX = "Newsletter Summary";
+const NEWSLETTER_SUMMARY_PREFIX = "Newsletter Summary";
+const BLOG_POST_SUMMARY_PREFIX = "Blog Post Summary";
 const SUMMARY_MODEL = "gpt-5.4";
 const CLAUDE_MODEL = "claude-sonnet-4-6";
 const SUMMARY_MAX_OUTPUT_TOKENS = 1024;
@@ -545,13 +546,14 @@ export async function sendSummaryEmail(
 	},
 	env: Env,
 	dedupeKey: string,
+	summaryPrefix: string = NEWSLETTER_SUMMARY_PREFIX,
 ): Promise<void> {
 	await sendResendEmail(
 		{
-			from: formatSummaryFrom(env.SUMMARY_FROM),
+			from: formatSummaryFrom(env.SUMMARY_FROM, summaryPrefix),
 			to: env.EMAIL_TO,
-			subject: `${SUMMARY_PREFIX}: ${sanitizeSubject(input.subject)}`,
-			html: renderSummaryHtml(input),
+			subject: `${summaryPrefix}: ${sanitizeSubject(input.subject)}`,
+			html: renderSummaryHtml(input, summaryPrefix),
 			text: renderSummaryText(input),
 		},
 		env.RESEND_API_KEY,
@@ -564,7 +566,7 @@ export function renderSummaryHtml(input: {
 	sender: string;
 	gptSummary: string;
 	claudeSummary: string;
-}): string {
+}, summaryPrefix: string = NEWSLETTER_SUMMARY_PREFIX): string {
 	const renderParagraphs = (text: string) =>
 		text
 			.split(/\n\s*\n/)
@@ -580,7 +582,7 @@ export function renderSummaryHtml(input: {
 <html lang="en">
   <body style="margin:0; padding:24px; background:#f4f1ea; font-family: Georgia, 'Times New Roman', serif; color:#111827;">
     <div style="max-width:680px; margin:0 auto; background:#fffdf8; border:1px solid #e5dccf; border-radius:16px; padding:32px;">
-      <p style="margin:0 0 12px; font-size:12px; letter-spacing:0.12em; text-transform:uppercase; color:#9a6b2f;">${SUMMARY_PREFIX}</p>
+      <p style="margin:0 0 12px; font-size:12px; letter-spacing:0.12em; text-transform:uppercase; color:#9a6b2f;">${summaryPrefix}</p>
       <h1 style="margin:0 0 12px; font-size:30px; line-height:1.2; color:#111827;">${escapeHtml(input.subject)}</h1>
       <p style="margin:0 0 24px; line-height:1.6; color:#4b5563;">From ${escapeHtml(input.sender)}</p>
       <h2 style="margin:0 0 12px; font-size:16px; letter-spacing:0.06em; text-transform:uppercase; color:#9a6b2f;">GPT-5.4</h2>
@@ -699,10 +701,10 @@ function formatMailbox(mailbox: { name: string; address: string }): string {
 	return mailbox.name || mailbox.address || "Unknown sender";
 }
 
-function formatSummaryFrom(summaryFrom: string): string {
+function formatSummaryFrom(summaryFrom: string, summaryPrefix: string = NEWSLETTER_SUMMARY_PREFIX): string {
 	return /<.+>/.test(summaryFrom)
 		? summaryFrom
-		: `Newsletter Summary <${summaryFrom}>`;
+		: `${summaryPrefix} <${summaryFrom}>`;
 }
 
 function sanitizeHeaderValue(value: string | null | undefined): string {
@@ -1010,6 +1012,7 @@ export async function processRssFeeds(env: Env): Promise<void> {
 					},
 					env,
 					dedupeKey,
+					BLOG_POST_SUMMARY_PREFIX,
 				);
 
 				await recordProcessedEmail(dedupeKey, env.PROCESSED_EMAILS, {

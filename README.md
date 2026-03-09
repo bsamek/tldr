@@ -54,7 +54,7 @@ npx wrangler secret put API_KEY
 - `API_KEY`: shared Bearer token for the Chrome extension. Generate one with `openssl rand -hex 32`.
 
 - `EMAIL_TO`: the Gmail address that should receive summary emails.
-- `SUMMARY_FROM`: a verified Resend sender on your domain. The Worker sends `Newsletter Summary <SUMMARY_FROM>`.
+- `SUMMARY_FROM`: a verified Resend sender on your domain. The Worker sends emails from `Newsletter Summary <SUMMARY_FROM>` for forwarded emails or `Blog Post Summary <SUMMARY_FROM>` for RSS feed items.
 - The Worker currently truncates extracted email text to 80,000 characters before summarization and caps model output at 1,024 tokens. Those are application guardrails for cost and latency, not GPT-5.4 model limits.
 
 ### 3. Configure RSS feeds (optional)
