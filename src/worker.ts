@@ -8,6 +8,7 @@ export interface Env {
 	SUMMARY_FROM: string;
 	PROCESSED_EMAILS: KVNamespace;
 	RSS_FEEDS: string;
+	API_KEY: string;
 }
 
 export interface RssFeedConfig {
@@ -35,6 +36,7 @@ export interface EmailMetadata {
 }
 
 const RSS_DEDUPE_PREFIX = "rss:";
+const EXT_DEDUPE_PREFIX = "ext:";
 const RSS_FETCH_TIMEOUT_MS = 10_000;
 const RSS_MAX_ITEMS_PER_FEED = 5;
 
@@ -88,7 +90,7 @@ const GMAIL_FORWARDING_FROM = "forwarding-noreply@google.com";
 const GMAIL_FORWARDING_SUBJECT = /gmail forwarding confirmation/i;
 
 export default {
-	async fetch(request: Request): Promise<Response> {
+	async fetch(request: Request, env: Env): Promise<Response> {
 		const url = new URL(request.url);
 
 		if (request.method === "GET" && url.pathname === HEALTH_PATH) {
@@ -97,6 +99,10 @@ export default {
 				service: "newsletter-summary-worker",
 				ingress: "email-routing",
 			});
+		}
+
+		if (request.method === "POST" && url.pathname === "/api/save") {
+			return handleApiSave(request, env);
 		}
 
 		return new Response("Not found", { status: 404 });
@@ -131,6 +137,95 @@ export default {
 		);
 	},
 };
+
+async function timingSafeEqual(a: string, b: string): Promise<boolean> {
+	const encoder = new TextEncoder();
+	const keyData = encoder.encode("timing-safe-compare");
+	const key = await crypto.subtle.importKey(
+		"raw",
+		keyData,
+		{ name: "HMAC", hash: "SHA-256" },
+		false,
+		["sign"],
+	);
+	const [macA, macB] = await Promise.all([
+		crypto.subtle.sign("HMAC", key, encoder.encode(a)),
+		crypto.subtle.sign("HMAC", key, encoder.encode(b)),
+	]);
+	if (macA.byteLength !== macB.byteLength) return false;
+	const viewA = new Uint8Array(macA);
+	const viewB = new Uint8Array(macB);
+	let diff = 0;
+	for (let i = 0; i < viewA.length; i++) {
+		diff |= viewA[i] ^ viewB[i];
+	}
+	return diff === 0;
+}
+
+export async function handleApiSave(
+	request: Request,
+	env: Env,
+): Promise<Response> {
+	const authHeader = request.headers.get("Authorization") || "";
+	const token = authHeader.startsWith("Bearer ")
+		? authHeader.slice(7)
+		: "";
+
+	if (!token || !env.API_KEY || !(await timingSafeEqual(token, env.API_KEY))) {
+		return jsonResponse({ ok: false, error: "Unauthorized" }, 401);
+	}
+
+	let body: { url?: string; title?: string; content?: string; siteName?: string };
+	try {
+		body = await request.json();
+	} catch {
+		return jsonResponse({ ok: false, error: "Invalid JSON" }, 400);
+	}
+
+	if (!body.url || !body.title || !body.content) {
+		return jsonResponse(
+			{ ok: false, error: "Missing required fields: url, title, content" },
+			400,
+		);
+	}
+
+	const dedupeKey = `${EXT_DEDUPE_PREFIX}${await sha256Hex(body.url)}`;
+
+	if (await hasProcessedEmail(dedupeKey, env.PROCESSED_EMAILS)) {
+		return jsonResponse({ ok: true, status: "duplicate" });
+	}
+
+	const truncatedContent = body.content.slice(0, MAX_SUMMARY_INPUT_CHARS);
+	const sender = body.siteName || new URL(body.url).hostname;
+
+	const summary = await summarizeEmail(
+		{
+			subject: body.title,
+			sender,
+			content: truncatedContent,
+		},
+		env.OPENAI_API_KEY,
+	);
+
+	await sendSummaryEmail(
+		{
+			subject: body.title,
+			sender,
+			summary,
+		},
+		env,
+		dedupeKey,
+	);
+
+	await recordProcessedEmail(dedupeKey, env.PROCESSED_EMAILS, {
+		status: "sent",
+		title: body.title,
+		url: body.url,
+		source: "extension",
+	});
+
+	return jsonResponse({ ok: true, status: "sent" });
+}
 
 export async function handleGmailForwardingConfirmation(
 	message: ForwardableEmailMessage,

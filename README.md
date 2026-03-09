@@ -7,11 +7,14 @@ A Cloudflare Worker that summarizes forwarded newsletter emails and RSS feed art
 ```text
 Gmail Filter -> Cloudflare Email Routing -> Worker -> OpenAI -> Resend -> Gmail
 Cron (every 30 min)  -> RSS Feeds        -> Worker -> OpenAI -> Resend -> Gmail
+Chrome Extension -> Readability.js       -> Worker -> OpenAI -> Resend -> Gmail
 ```
 
 **Email path:** Gmail keeps the original newsletter in your inbox. A Gmail filter forwards matching senders to a Cloudflare-managed email address, the Worker parses the message body, asks OpenAI `gpt-5.4` for a 3-5 paragraph summary with `reasoning.effort` set to `none`, and Resend sends the summary back to you.
 
 **RSS path:** A Cloudflare Cron Trigger runs every 30 minutes, fetches configured RSS/Atom feeds, extracts new articles, summarizes them with the same OpenAI pipeline, and emails the summaries via Resend. Already-processed items are skipped using the same KV dedup store.
+
+**Chrome extension path:** A Manifest V3 Chrome extension lets you save any article — including paywalled pages you're logged into — by clicking "Summarize This Page." The extension uses Mozilla's Readability.js to extract the article content in-browser, then POSTs it to the Worker's `POST /api/save` endpoint with Bearer token auth. The Worker deduplicates, summarizes, and emails the result.
 
 ## Setup
 
@@ -42,7 +45,10 @@ npx wrangler secret put OPENAI_API_KEY
 npx wrangler secret put RESEND_API_KEY
 npx wrangler secret put EMAIL_TO
 npx wrangler secret put SUMMARY_FROM
+npx wrangler secret put API_KEY
 ```
+
+- `API_KEY`: shared Bearer token for the Chrome extension. Generate one with `openssl rand -hex 32`.
 
 - `EMAIL_TO`: the Gmail address that should receive summary emails.
 - `SUMMARY_FROM`: a verified Resend sender on your domain. The Worker sends `Newsletter Summary <SUMMARY_FROM>`.
@@ -103,7 +109,14 @@ npm run typecheck
 npm test
 ```
 
-### 7. Manual test
+### 7. Install the Chrome extension
+
+1. Open `chrome://extensions` and enable **Developer mode**.
+2. Click **Load unpacked** and select the `extension/` directory.
+3. Click the extension icon, enter your Worker URL (e.g. `https://readwise-summary.your-domain.workers.dev`) and the `API_KEY` you set above, then click **Save Settings**.
+4. Navigate to any article page and click **Summarize This Page**.
+
+### 8. Manual test
 
 Forward one newsletter sender to the Cloudflare address and confirm:
 
@@ -117,4 +130,3 @@ Use `npx wrangler tail` to stream Worker logs while testing.
 
 - Remove Readwise completely later.
 - Add a Safari share sheet flow on iOS.
-- Add a Chrome extension on desktop.

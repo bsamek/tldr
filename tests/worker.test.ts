@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createRssDedupeKey,
 	extractSummaryContent,
+	handleApiSave,
 	handleGmailForwardingConfirmation,
 	isGmailForwardingConfirmation,
 	parseFeedItems,
@@ -99,8 +100,26 @@ function createEnv(overrides?: Partial<Env>): Env {
 		SUMMARY_FROM: "summary@example.com",
 		PROCESSED_EMAILS: new MemoryKVNamespace() as unknown as KVNamespace,
 		RSS_FEEDS: "[]",
+		API_KEY: "test-api-key-1234",
 		...overrides,
 	};
+}
+
+function createSaveRequest(
+	body: Record<string, unknown>,
+	token?: string,
+): Request {
+	const headers: Record<string, string> = {
+		"Content-Type": "application/json",
+	};
+	if (token !== undefined) {
+		headers["Authorization"] = `Bearer ${token}`;
+	}
+	return new Request("https://worker.example.com/api/save", {
+		method: "POST",
+		headers,
+		body: JSON.stringify(body),
+	});
 }
 
 describe("email content extraction", () => {
@@ -523,5 +542,159 @@ describe("RSS feed processing", () => {
 		expect(resendCall).toBeTruthy();
 		const body = JSON.parse(resendCall![1]!.body as string);
 		expect(body.subject).toContain("New Post");
+	});
+});
+
+describe("POST /api/save", () => {
+	const fetchMock = vi.fn<typeof fetch>();
+
+	beforeEach(() => {
+		fetchMock.mockReset();
+		vi.stubGlobal("fetch", fetchMock);
+	});
+
+	it("returns 401 when Authorization header is missing", async () => {
+		const env = createEnv();
+		const req = new Request("https://worker.example.com/api/save", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ url: "https://example.com", title: "Test", content: "Body" }),
+		});
+
+		const resp = await handleApiSave(req, env);
+		expect(resp.status).toBe(401);
+		const data = await resp.json();
+		expect(data).toMatchObject({ ok: false, error: "Unauthorized" });
+	});
+
+	it("returns 401 when API key is wrong", async () => {
+		const env = createEnv();
+		const req = createSaveRequest(
+			{ url: "https://example.com", title: "Test", content: "Body" },
+			"wrong-key",
+		);
+
+		const resp = await handleApiSave(req, env);
+		expect(resp.status).toBe(401);
+	});
+
+	it("returns 400 when required fields are missing", async () => {
+		const env = createEnv();
+		const req = createSaveRequest(
+			{ url: "https://example.com", title: "Test" },
+			"test-api-key-1234",
+		);
+
+		const resp = await handleApiSave(req, env);
+		expect(resp.status).toBe(400);
+		const data = await resp.json();
+		expect(data.error).toContain("Missing required fields");
+	});
+
+	it("returns duplicate on second save of same URL", async () => {
+		fetchMock.mockImplementation(async (input) => {
+			if (typeof input === "string" && input.includes("api.openai.com")) {
+				return new Response(
+					JSON.stringify({
+						output: [
+							{
+								type: "message",
+								content: [{ type: "output_text", text: "A summary." }],
+							},
+						],
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			if (typeof input === "string" && input.includes("resend.com")) {
+				return new Response(JSON.stringify({ id: "email_ext" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			throw new Error(`Unexpected fetch: ${String(input)}`);
+		});
+
+		const env = createEnv();
+		const payload = {
+			url: "https://example.com/article",
+			title: "Great Article",
+			content: "Full article text here.",
+			siteName: "Example Blog",
+		};
+
+		const resp1 = await handleApiSave(
+			createSaveRequest(payload, "test-api-key-1234"),
+			env,
+		);
+		expect(resp1.status).toBe(200);
+		const data1 = await resp1.json();
+		expect(data1).toMatchObject({ ok: true, status: "sent" });
+
+		const resp2 = await handleApiSave(
+			createSaveRequest(payload, "test-api-key-1234"),
+			env,
+		);
+		expect(resp2.status).toBe(200);
+		const data2 = await resp2.json();
+		expect(data2).toMatchObject({ ok: true, status: "duplicate" });
+
+		// Only one OpenAI + Resend call pair
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("calls OpenAI and Resend with correct content", async () => {
+		fetchMock.mockImplementation(async (input) => {
+			if (typeof input === "string" && input.includes("api.openai.com")) {
+				return new Response(
+					JSON.stringify({
+						output: [
+							{
+								type: "message",
+								content: [{ type: "output_text", text: "Summary of the article." }],
+							},
+						],
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			if (typeof input === "string" && input.includes("resend.com")) {
+				return new Response(JSON.stringify({ id: "email_ext_2" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			throw new Error(`Unexpected fetch: ${String(input)}`);
+		});
+
+		const env = createEnv();
+		const req = createSaveRequest(
+			{
+				url: "https://example.com/paywalled",
+				title: "Paywalled Article",
+				content: "The full paywalled content extracted from browser.",
+				siteName: "Premium News",
+			},
+			"test-api-key-1234",
+		);
+
+		const resp = await handleApiSave(req, env);
+		expect(resp.status).toBe(200);
+
+		const openAiCall = fetchMock.mock.calls.find(
+			([input]) => typeof input === "string" && input.includes("api.openai.com"),
+		);
+		expect(openAiCall).toBeTruthy();
+		const openAiBody = JSON.parse(openAiCall![1]!.body as string);
+		expect(openAiBody.input[0].content[0].text).toContain("Paywalled Article");
+		expect(openAiBody.input[0].content[0].text).toContain("Premium News");
+
+		const resendCall = fetchMock.mock.calls.find(
+			([input]) => typeof input === "string" && input.includes("resend.com"),
+		);
+		expect(resendCall).toBeTruthy();
+		const resendBody = JSON.parse(resendCall![1]!.body as string);
+		expect(resendBody.subject).toContain("Paywalled Article");
+		expect(resendBody.to).toBe("me@example.com");
 	});
 });
