@@ -1,14 +1,17 @@
 # Newsletter Email Summarizer
 
-A Cloudflare Worker that summarizes forwarded newsletter emails and sends a per-email summary back to your Gmail inbox.
+A Cloudflare Worker that summarizes forwarded newsletter emails and RSS feed articles, then sends per-item summaries back to your Gmail inbox.
 
 ## How It Works
 
 ```text
 Gmail Filter -> Cloudflare Email Routing -> Worker -> OpenAI -> Resend -> Gmail
+Cron (every 30 min)  -> RSS Feeds        -> Worker -> OpenAI -> Resend -> Gmail
 ```
 
-Gmail keeps the original newsletter in your inbox. A Gmail filter forwards matching senders to a Cloudflare-managed email address, the Worker parses the message body, asks OpenAI `gpt-5.4` for a 3-5 paragraph summary with `reasoning.effort` set to `none`, and Resend sends the summary back to you.
+**Email path:** Gmail keeps the original newsletter in your inbox. A Gmail filter forwards matching senders to a Cloudflare-managed email address, the Worker parses the message body, asks OpenAI `gpt-5.4` for a 3-5 paragraph summary with `reasoning.effort` set to `none`, and Resend sends the summary back to you.
+
+**RSS path:** A Cloudflare Cron Trigger runs every 30 minutes, fetches configured RSS/Atom feeds, extracts new articles, summarizes them with the same OpenAI pipeline, and emails the summaries via Resend. Already-processed items are skipped using the same KV dedup store.
 
 ## Setup
 
@@ -45,7 +48,18 @@ npx wrangler secret put SUMMARY_FROM
 - `SUMMARY_FROM`: a verified Resend sender on your domain. The Worker sends `Newsletter Summary <SUMMARY_FROM>`.
 - The Worker currently truncates extracted email text to 80,000 characters before summarization and caps model output at 1,024 tokens. Those are application guardrails for cost and latency, not GPT-5.4 model limits.
 
-### 3. Configure Cloudflare Email Routing
+### 3. Configure RSS feeds (optional)
+
+Set the `RSS_FEEDS` environment variable to a JSON array of feed configs:
+
+```sh
+npx wrangler secret put RSS_FEEDS
+# Enter: [{"url":"https://example.com/feed.xml","name":"Example Blog"}]
+```
+
+Or set it in `wrangler.toml` under `[vars]` for non-sensitive feeds. The cron trigger runs every 30 minutes and processes up to 5 new items per feed per run.
+
+### 4. Configure Cloudflare Email Routing
 
 You need a domain using Cloudflare as the authoritative nameserver.
 
@@ -53,20 +67,26 @@ You need a domain using Cloudflare as the authoritative nameserver.
 2. Create an address such as `newsletters@your-domain.com` and route it to this Worker.
 3. Make sure `EMAIL_TO` is also a verified Cloudflare Email Routing destination address. The Worker forwards Gmail's forwarding-confirmation email there instead of trying to summarize it.
 
-### 4. Configure Gmail forwarding and filters
+### 5. Configure Gmail forwarding and filters
 
 1. In Gmail settings, add the Cloudflare address such as `newsletters@your-domain.com` as a forwarding address.
 2. Wait for Gmail's forwarding confirmation email to arrive in `EMAIL_TO`, then approve the forwarding address in Gmail.
 3. Create one or more Gmail filters for newsletter senders and choose `Forward it to` the Cloudflare address.
 4. Keep the filters narrow enough that they do not match the summary emails coming back from `SUMMARY_FROM`, or you will create a loop.
 
-### 5. Local development
+### 6. Local development
 
 ```sh
 npm run dev
 ```
 
-In local development, Cloudflare exposes the email handler at `/cdn-cgi/handler/email`. You can post a raw `.eml` file to it:
+In local development, Cloudflare exposes the email handler at `/cdn-cgi/handler/email`. You can post a raw `.eml` file to it or trigger the cron manually:
+
+```sh
+curl "http://localhost:8787/__scheduled?cron=*/30+*+*+*+*"
+```
+
+For email testing:
 
 ```sh
 curl -X POST http://127.0.0.1:8787/cdn-cgi/handler/email \
@@ -83,7 +103,7 @@ npm run typecheck
 npm test
 ```
 
-### 6. Manual test
+### 7. Manual test
 
 Forward one newsletter sender to the Cloudflare address and confirm:
 
@@ -95,7 +115,6 @@ Use `npx wrangler tail` to stream Worker logs while testing.
 
 ## Backlog
 
-- Replace the Readwise RSS path later, likely via polling.
 - Remove Readwise completely later.
 - Add a Safari share sheet flow on iOS.
 - Add a Chrome extension on desktop.

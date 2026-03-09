@@ -1,0 +1,1 @@
+- When adding new features, update README.md to document them.
