@@ -1,57 +1,98 @@
-# Readwise Reader Inbox Summarizer
+# Newsletter Email Summarizer
 
-A Cloudflare Worker that automatically summarizes articles added to your Readwise Reader Inbox and emails you the summary, with one-click buttons to move the story to Later or archive it.
+A Cloudflare Worker that summarizes forwarded newsletter emails and sends a per-email summary back to your Gmail inbox.
 
-## How it works
+## How It Works
 
+```text
+Gmail Filter -> Cloudflare Email Routing -> Worker -> Anthropic -> Resend -> Gmail
 ```
-Readwise Reader → Webhook → Cloudflare Worker → Claude → Email via Resend
-```
 
-When an article lands in your Reader Inbox, the worker receives a webhook, fetches the article content, generates a 3-5 paragraph summary using Claude, and emails it to you within seconds. Each email includes `Add to Later` and `Archive in Readwise` buttons so you can decide whether to keep the article for later reading or clear it out immediately.
+Gmail keeps the original newsletter in your inbox. A Gmail filter forwards matching senders to a Cloudflare-managed email address, the Worker parses the message body, asks Anthropic for a 3-5 paragraph summary, and Resend sends the summary back to you. Each summary email includes a link to the original article URL when the Worker can extract one confidently.
 
 ## Setup
 
-### 1. Deploy the worker
+### 1. Install and deploy
 
 ```sh
 npm install
 npx wrangler login
+```
+
+Create the KV namespaces and copy the returned IDs into [wrangler.toml](/Users/brian/src/readwise/wrangler.toml):
+
+```sh
+npx wrangler kv namespace create PROCESSED_EMAILS
+npx wrangler kv namespace create PROCESSED_EMAILS --preview
+```
+
+Then deploy:
+
+```sh
 npm run deploy
 ```
 
-### 2. Set secrets
+### 2. Set Worker secrets
 
 ```sh
-npx wrangler secret put READWISE_TOKEN      # https://readwise.io/access_token
-npx wrangler secret put READWISE_WEBHOOK_SECRET  # must match the webhook secret configured in Readwise
-npx wrangler secret put ANTHROPIC_API_KEY    # Claude API key
-npx wrangler secret put RESEND_API_KEY       # https://resend.com
-npx wrangler secret put EMAIL_TO             # your email address
-npx wrangler secret put ARCHIVE_LINK_SECRET  # random signing secret for Later/archive action URLs
+npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler secret put RESEND_API_KEY
+npx wrangler secret put EMAIL_TO
+npx wrangler secret put SUMMARY_FROM
 ```
 
-### 3. Configure the webhook
+- `EMAIL_TO`: the Gmail address that should receive summary emails.
+- `SUMMARY_FROM`: a verified Resend sender on your domain. The Worker sends `Newsletter Summary <SUMMARY_FROM>`.
 
-In Readwise Reader settings, create a webhook:
-- **URL:** `https://readwise-summary.<your-subdomain>.workers.dev/webhook`
-- **Secret:** use the same value you stored in `READWISE_WEBHOOK_SECRET`
-- **Events:**
-  - `Reader Non-Feed Document Created`
-  - `Reader Document Moved To Inbox`
+### 3. Configure Cloudflare Email Routing
 
-If you want to summarize feed items too, use `Reader Any Document Created` instead of `Reader Non-Feed Document Created`.
+You need a domain using Cloudflare as the authoritative nameserver.
 
-Readwise's webhook/API payloads label Inbox items as `location: "new"`, even though the UI says "Inbox". This worker treats both `new` and `moved_to_inbox` as Inbox events.
+1. Enable Email Routing for the domain in Cloudflare.
+2. Create an address such as `newsletters@your-domain.com` and route it to this Worker.
+3. Make sure `EMAIL_TO` is also a verified Cloudflare Email Routing destination address. The Worker forwards Gmail's forwarding-confirmation email there instead of trying to summarize it.
 
-### 4. Test
+### 4. Configure Gmail forwarding and filters
 
-Add an article to Reader Inbox, or move one back into Inbox. You should receive a summary email within seconds. Use `Add to Later` if you want to read it later, or `Archive in Readwise` if the summary was enough.
+1. In Gmail settings, add the Cloudflare address such as `newsletters@your-domain.com` as a forwarding address.
+2. Wait for Gmail's forwarding confirmation email to arrive in `EMAIL_TO`, then approve the forwarding address in Gmail.
+3. Create one or more Gmail filters for newsletter senders and choose `Forward it to` the Cloudflare address.
+4. Keep the filters narrow enough that they do not match the summary emails coming back from `SUMMARY_FROM`, or you will create a loop.
 
-Use `npx wrangler tail` to stream live logs if you need to debug.
-
-## Tear down
+### 5. Local development
 
 ```sh
-npx wrangler delete
+npm run dev
 ```
+
+In local development, Cloudflare exposes the email handler at `/cdn-cgi/handler/email`. You can post a raw `.eml` file to it:
+
+```sh
+curl -X POST http://127.0.0.1:8787/cdn-cgi/handler/email \
+  --data-binary @sample.eml
+```
+
+Run the automated checks with:
+
+```sh
+npm run typecheck
+npm test
+```
+
+### 6. Manual test
+
+Forward one newsletter sender to the Cloudflare address and confirm:
+
+- the original newsletter stays in Gmail
+- one summary email arrives from Resend
+- the summary email has no action buttons
+- the summary email includes a source URL only when the Worker found a confident non-tracking article link
+
+Use `npx wrangler tail` to stream Worker logs while testing.
+
+## Backlog
+
+- Replace the Readwise RSS path later, likely via polling.
+- Remove Readwise completely later.
+- Add a Safari share sheet flow on iOS.
+- Add a Chrome extension on desktop.
