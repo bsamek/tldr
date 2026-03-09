@@ -8,7 +8,7 @@ A Cloudflare Worker that summarizes forwarded newsletter emails and sends a per-
 Gmail Filter -> Cloudflare Email Routing -> Worker -> OpenAI -> Resend -> Gmail
 ```
 
-Gmail keeps the original newsletter in your inbox. A Gmail filter forwards matching senders to a Cloudflare-managed email address, the Worker parses the message body, asks OpenAI `gpt-5.4` for a 3-5 paragraph summary with `reasoning.effort` set to `none`, and Resend sends the summary back to you. Each summary email includes a link to the original article URL when the Worker can extract one confidently.
+Gmail keeps the original newsletter in your inbox. A Gmail filter forwards matching senders to a Cloudflare-managed email address, the Worker parses the message body, asks OpenAI `gpt-5.4` for a 3-5 paragraph summary with `reasoning.effort` set to `none`, and Resend sends the summary back to you.
 
 ## Setup
 
@@ -90,7 +90,6 @@ Forward one newsletter sender to the Cloudflare address and confirm:
 - the original newsletter stays in Gmail
 - one summary email arrives from Resend
 - the summary email has no action buttons
-- the summary email includes a source URL only when the Worker found a confident non-tracking article link
 
 Use `npx wrangler tail` to stream Worker logs while testing.
 

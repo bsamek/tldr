@@ -1,10 +1,6 @@
-import { readFileSync } from "node:fs";
-
-import PostalMime from "postal-mime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-	extractOriginalArticleUrl,
 	extractSummaryContent,
 	handleGmailForwardingConfirmation,
 	isGmailForwardingConfirmation,
@@ -200,58 +196,6 @@ describe("email content extraction", () => {
 		);
 		expect(content).not.toContain("From:");
 		expect(content).not.toContain("Subject:");
-	});
-});
-
-describe("article URL extraction", () => {
-	it("prefers a non-tracking article URL", () => {
-		const html = `
-			<p><a href="https://example.com/unsubscribe">Unsubscribe</a></p>
-			<p><a href="https://click.example.net/track?url=https%3A%2F%2Fexample.com%2Fstory">Read story</a></p>
-		`;
-
-		expect(extractOriginalArticleUrl(html)).toBe("https://example.com/story");
-	});
-
-	it("prefers the article headline over Substack subscribe CTAs", () => {
-		const html = `
-			<p>Forwarded this email? <a href="https://substack.com/redirect/subscribe">Subscribe here</a> for more</p>
-			<h1><a href="https://heatmap.news/p/solar-in-poor-countries-is-creating-a-huge-lead-hazard">Solar in poor countries is creating a huge lead hazard</a></h1>
-			<p><a href="https://substack.com/app-link/post">Read in app</a></p>
-		`;
-
-		expect(extractOriginalArticleUrl(html)).toBe(
-			"https://heatmap.news/p/solar-in-poor-countries-is-creating-a-huge-lead-hazard",
-		);
-	});
-
-	it("prefers the permalink that matches the forwarded subject over body links", () => {
-		const html = `
-			<p><a href="https://www.nytimes.com/2026/01/30/us/politics/h2b-visas.html">The politics of H-2B visas</a></p>
-			<h1><a href="https://www.noahpinion.blog/p/we-may-miss-the-sweatshops"><img alt=""></a></h1>
-		`;
-
-		expect(
-			extractOriginalArticleUrl(
-				html,
-				undefined,
-				"Fwd: We may miss the sweatshops",
-			),
-		).toBe("https://www.noahpinion.blog/p/we-may-miss-the-sweatshops");
-	});
-
-	it("unwraps the real Substack redirect permalink from a forwarded fixture", async () => {
-		const raw = readFileSync(
-			new URL(
-				"./fixtures/forwarded-substack-we-may-miss-the-sweatshops.eml",
-				import.meta.url,
-			),
-		);
-		const parsed = await PostalMime.parse(raw);
-
-		expect(
-			extractOriginalArticleUrl(parsed.html, parsed.text, parsed.subject),
-		).toBe("https://www.theargumentmag.com/p/we-may-miss-the-sweatshops");
 	});
 });
 

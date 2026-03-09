@@ -22,7 +22,6 @@ const HEALTH_PATH = "/healthz";
 // App-side guardrail for cost and latency; GPT-5.4 can handle far more context.
 const MAX_SUMMARY_INPUT_CHARS = 80_000;
 const DEDUPE_TTL_SECONDS = 60 * 60 * 24 * 7;
-const MAX_URL_UNWRAPS = 3;
 const SUMMARY_PREFIX = "Newsletter Summary";
 const SUMMARY_MODEL = "gpt-5.4";
 const SUMMARY_MAX_OUTPUT_TOKENS = 1024;
@@ -46,18 +45,6 @@ const INLINE_SKIP_PATTERNS = [
 	/^\s*was this email forwarded to you\?\b/i,
 ];
 
-const GENERIC_LINK_TEXT_PATTERNS = [
-	/\bsubscribe here\b/i,
-	/^\s*subscribe\b/i,
-	/\bread in app\b/i,
-	/\bopen in app\b/i,
-	/\bview in browser\b/i,
-	/\bread online\b/i,
-	/^\s*(like|comment|restack|share|forward)\s*$/i,
-	/^\s*upgrade\b/i,
-	/^\s*start writing\b/i,
-];
-
 const QUOTED_REPLY_PATTERNS = [/^\s*on .+ wrote:\s*$/i, /^\s*>+/];
 
 const FORWARDED_MESSAGE_PATTERNS = [
@@ -76,53 +63,6 @@ const FORWARDED_HEADER_PATTERNS = [
 ];
 
 const FORWARDED_SUBJECT_PATTERNS = [/^\s*fwd:\s+/i, /^\s*fw:\s+/i];
-
-const IGNORED_URL_HOSTS = new Set([
-	"facebook.com",
-	"help.instagram.com",
-	"instagram.com",
-	"linkedin.com",
-	"list-manage.com",
-	"mailchi.mp",
-	"mailchimpapp.net",
-	"mailto",
-	"twitter.com",
-	"x.com",
-	"youtube.com",
-]);
-
-const IGNORED_URL_PATH_PATTERNS = [
-	/(^|\/)account(?:\/|$)/i,
-	/(^|\/)app-link(?:\/|$)/i,
-	/(^|\/)(login|sign-?in)(?:\/|$)/i,
-	/unsubscribe/i,
-	/manage-?preferences/i,
-	/privacy/i,
-	/share/i,
-	/(^|\/)settings(?:\/|$)/i,
-	/social/i,
-	/(^|\/)subscribe(?:\/|$)/i,
-	"open.spotify.com",
-];
-
-const TRACKING_HOST_PATTERNS = [
-	/^click\./i,
-	/^email\./i,
-	/^links?\./i,
-	/^newsletters?\./i,
-	/^trk\./i,
-];
-
-const REDIRECT_QUERY_PARAMS = [
-	"url",
-	"u",
-	"q",
-	"redirect",
-	"redirect_url",
-	"destination",
-	"dest",
-	"target",
-];
 
 const GMAIL_FORWARDING_FROM = "forwarding-noreply@google.com";
 const GMAIL_FORWARDING_SUBJECT = /gmail forwarding confirmation/i;
@@ -241,16 +181,10 @@ export async function processIncomingEmail(
 		return;
 	}
 
-	const sourceUrl = extractOriginalArticleUrl(
-		metadata.html,
-		metadata.text,
-		metadata.subject,
-	);
 	const summary = await summarizeEmail(
 		{
 			subject: metadata.subject,
 			sender: formatSender(metadata),
-			sourceUrl,
 			content,
 		},
 		env.OPENAI_API_KEY,
@@ -261,7 +195,6 @@ export async function processIncomingEmail(
 			subject: metadata.subject,
 			sender: formatSender(metadata),
 			summary,
-			sourceUrl,
 		},
 		env,
 		dedupeKey,
@@ -270,7 +203,6 @@ export async function processIncomingEmail(
 	await recordProcessedEmail(dedupeKey, env.PROCESSED_EMAILS, {
 		status: "sent",
 		subject: metadata.subject,
-		sourceUrl,
 	});
 }
 
@@ -316,130 +248,6 @@ export function extractSummaryContent(metadata: EmailMetadata): string {
 	return (candidates[0] || "").slice(0, MAX_SUMMARY_INPUT_CHARS);
 }
 
-export function extractOriginalArticleUrl(
-	html?: string,
-	text?: string,
-	subject?: string,
-): string | undefined {
-	const candidates = [
-		...extractUrlCandidatesFromHtml(html || ""),
-		...extractUrlCandidatesFromText(text || ""),
-	];
-	let bestMatch:
-		| {
-				index: number;
-				score: number;
-				url: string;
-		  }
-		| undefined;
-
-	for (const candidate of candidates) {
-		const normalized = unwrapTrackingUrl(candidate.rawUrl);
-		if (!normalized) {
-			continue;
-		}
-
-		if (isLikelyArticleUrl(normalized)) {
-			const score = scoreArticleUrlCandidate(candidate, normalized, subject);
-			if (
-				!bestMatch ||
-				score > bestMatch.score ||
-				(score === bestMatch.score && candidate.index < bestMatch.index)
-			) {
-				bestMatch = {
-					index: candidate.index,
-					score,
-					url: normalized,
-				};
-			}
-		}
-	}
-
-	return bestMatch?.url;
-}
-
-export function unwrapTrackingUrl(rawUrl: string): string | undefined {
-	let current = normalizeCandidateUrl(rawUrl);
-	if (!current) {
-		return undefined;
-	}
-
-	for (let depth = 0; depth < MAX_URL_UNWRAPS; depth += 1) {
-		const url = safeUrl(current);
-		if (!url) {
-			return undefined;
-		}
-
-		const redirectTarget = REDIRECT_QUERY_PARAMS
-			.map((key) => url.searchParams.get(key))
-			.find((value) => value && /^https?:\/\//i.test(value));
-
-		const substackRedirectTarget = unwrapSubstackRedirectTarget(url);
-
-		const nextTarget = redirectTarget ?? substackRedirectTarget;
-		if (!nextTarget) {
-			return url.toString();
-		}
-
-		current = normalizeCandidateUrl(nextTarget);
-		if (!current) {
-			return undefined;
-		}
-	}
-
-	return current;
-}
-
-function unwrapSubstackRedirectTarget(url: URL): string | undefined {
-	if (normalizeHostname(url.hostname) !== "substack.com") {
-		return undefined;
-	}
-
-	const segments = url.pathname.split("/").filter(Boolean);
-	if (segments[0] !== "redirect" || segments.length < 3) {
-		return undefined;
-	}
-
-	const token = segments.at(-1)?.split(".")[0];
-	if (!token) {
-		return undefined;
-	}
-
-	const payload = decodeBase64Url(token);
-	if (!payload) {
-		return undefined;
-	}
-
-	try {
-		const parsed = JSON.parse(payload) as { e?: string };
-		return /^https?:\/\//i.test(parsed.e || "") ? parsed.e : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-export function isLikelyArticleUrl(candidate: string): boolean {
-	const url = safeUrl(candidate);
-	if (!url || !/^https?:$/.test(url.protocol)) {
-		return false;
-	}
-
-	const hostname = normalizeHostname(url.hostname);
-	if (
-		IGNORED_URL_HOSTS.has(hostname) ||
-		TRACKING_HOST_PATTERNS.some((pattern) => pattern.test(hostname))
-	) {
-		return false;
-	}
-
-	const fullPath = `${url.pathname}${url.search}${url.hash}`;
-	return !IGNORED_URL_PATH_PATTERNS.some((pattern) =>
-		typeof pattern === "string"
-			? `${hostname}${fullPath}`.includes(pattern)
-			: pattern.test(fullPath),
-	);
-}
-
 export async function createDedupeKey(metadata: EmailMetadata): Promise<string> {
 	const basis = [
 		metadata.messageId,
@@ -473,7 +281,6 @@ export async function summarizeEmail(
 	input: {
 		subject: string;
 		sender: string;
-		sourceUrl?: string;
 		content: string;
 	},
 	apiKey: string,
@@ -500,7 +307,6 @@ export async function summarizeEmail(
 							type: "input_text",
 							text: `Email subject: ${input.subject}
 Email sender: ${input.sender}
-Original article URL: ${input.sourceUrl || "Unavailable"}
 
 Email content:
 ${input.content.slice(0, MAX_SUMMARY_INPUT_CHARS)}`,
@@ -543,7 +349,6 @@ export async function sendSummaryEmail(
 		subject: string;
 		sender: string;
 		summary: string;
-		sourceUrl?: string;
 	},
 	env: Env,
 	dedupeKey: string,
@@ -565,7 +370,6 @@ export function renderSummaryHtml(input: {
 	subject: string;
 	sender: string;
 	summary: string;
-	sourceUrl?: string;
 }): string {
 	const summaryParagraphs = input.summary
 		.split(/\n\s*\n/)
@@ -577,10 +381,6 @@ export function renderSummaryHtml(input: {
 		)
 		.join("");
 
-	const sourceLink = input.sourceUrl
-		? `<p style="margin:0; line-height:1.6;"><a href="${escapeHtml(input.sourceUrl)}" style="color:#0f4c81;">Open original article</a></p>`
-		: `<p style="margin:0; line-height:1.6; color:#6b7280;">Original article URL unavailable.</p>`;
-
 	return `<!doctype html>
 <html lang="en">
   <body style="margin:0; padding:24px; background:#f4f1ea; font-family: Georgia, 'Times New Roman', serif; color:#111827;">
@@ -589,7 +389,6 @@ export function renderSummaryHtml(input: {
       <h1 style="margin:0 0 12px; font-size:30px; line-height:1.2; color:#111827;">${escapeHtml(input.subject)}</h1>
       <p style="margin:0 0 24px; line-height:1.6; color:#4b5563;">From ${escapeHtml(input.sender)}</p>
       ${summaryParagraphs}
-      <div style="margin-top:24px;">${sourceLink}</div>
     </div>
   </body>
 </html>`;
@@ -599,20 +398,8 @@ export function renderSummaryText(input: {
 	subject: string;
 	sender: string;
 	summary: string;
-	sourceUrl?: string;
 }): string {
-	const lines = [
-		input.summary.trim(),
-		"",
-		"---",
-		`From: ${input.sender}`,
-	];
-
-	if (input.sourceUrl) {
-		lines.push(`Original article: ${input.sourceUrl}`);
-	}
-
-	return lines.join("\n");
+	return [input.summary.trim(), "", "---", `From: ${input.sender}`].join("\n");
 }
 
 export function renderForwardingConfirmationHtml(input: {
@@ -853,165 +640,6 @@ function collapseWhitespace(value: string): string {
 		.replace(/\n{3,}/g, "\n\n")
 		.replace(/[ \t]{2,}/g, " ")
 		.trim();
-}
-
-type UrlCandidate = {
-	index: number;
-	label?: string;
-	rawUrl: string;
-	source: "html" | "text";
-};
-
-function extractUrlCandidatesFromHtml(html: string): UrlCandidate[] {
-	const matches = html.matchAll(
-		/<a\b[^>]*href\s*=\s*(['"])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi,
-	);
-	const candidates: UrlCandidate[] = Array.from(matches, (match, index) => {
-		const label = collapseWhitespace(stripHtml(match[3]));
-		return {
-			index,
-			label: label || undefined,
-			rawUrl: decodeHtmlEntities(match[2]),
-			source: "html" as const,
-		};
-	});
-
-	if (candidates.length > 0) {
-		const seenUrls = new Set(candidates.map((candidate) => candidate.rawUrl));
-		const hrefMatches = html.matchAll(/href\s*=\s*(['"])(.*?)\1/gi);
-
-		for (const match of hrefMatches) {
-			const rawUrl = decodeHtmlEntities(match[2]);
-			if (seenUrls.has(rawUrl)) {
-				continue;
-			}
-
-			candidates.push({
-				index: candidates.length,
-				rawUrl,
-				source: "html" as const,
-			});
-			seenUrls.add(rawUrl);
-		}
-
-		return candidates;
-	}
-
-	const hrefMatches = html.matchAll(/href\s*=\s*(['"])(.*?)\1/gi);
-	return Array.from(hrefMatches, (match, index) => ({
-		index,
-		rawUrl: decodeHtmlEntities(match[2]),
-		source: "html" as const,
-	}));
-}
-
-function extractUrlCandidatesFromText(text: string): UrlCandidate[] {
-	const matches = text.match(/https?:\/\/[^\s<>"')]+/gi);
-	return matches
-		? matches.map((match, index) => ({
-				index: 10_000 + index,
-				rawUrl: match.trim(),
-				source: "text" as const,
-			}))
-		: [];
-}
-
-function scoreArticleUrlCandidate(
-	candidate: UrlCandidate,
-	normalizedUrl: string,
-	subject?: string,
-): number {
-	let score = candidate.source === "html" ? 1 : 0;
-	const label = collapseWhitespace(candidate.label || "");
-	const wordCount = label ? label.split(/\s+/).length : 0;
-	const normalizedSubject = normalizeComparisonText(stripForwardSubjectPrefix(subject || ""));
-
-	if (label) {
-		if (GENERIC_LINK_TEXT_PATTERNS.some((pattern) => pattern.test(label))) {
-			score -= 8;
-		}
-
-		if (label.length >= 32) {
-			score += 2;
-		}
-
-		if (wordCount >= 5) {
-			score += 3;
-		}
-	}
-
-	if (label && normalizedSubject) {
-		const normalizedLabel = normalizeComparisonText(label);
-		if (normalizedLabel === normalizedSubject) {
-			score += 10;
-		} else if (
-			normalizedLabel.length >= 16 &&
-			(normalizedLabel.includes(normalizedSubject) ||
-				normalizedSubject.includes(normalizedLabel))
-		) {
-			score += 6;
-		}
-	}
-
-	const url = safeUrl(normalizedUrl);
-	if (!url) {
-		return score;
-	}
-
-	const path = url.pathname.toLowerCase();
-	if (/\/p\/[^/]+/.test(path)) {
-		score += 2;
-	}
-
-	if (normalizedSubject) {
-		const normalizedPath = normalizeComparisonText(url.pathname);
-		if (normalizedPath.includes(normalizedSubject)) {
-			score += 8;
-		}
-	}
-
-	return score;
-}
-
-function stripForwardSubjectPrefix(subject: string): string {
-	return subject.replace(/^(?:\s*(?:re|fw|fwd):\s*)+/i, "").trim();
-}
-
-function normalizeComparisonText(value: string): string {
-	return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-function decodeBase64Url(value: string): string | undefined {
-	const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-	const padded = normalized.padEnd(
-		normalized.length + ((4 - (normalized.length % 4)) % 4),
-		"=",
-	);
-
-	try {
-		return atob(padded);
-	} catch {
-		return undefined;
-	}
-}
-
-function normalizeCandidateUrl(rawUrl: string): string | undefined {
-	const trimmed = decodeHtmlEntities(rawUrl)
-		.trim()
-		.replace(/[)>.,]+$/g, "");
-	return /^https?:\/\//i.test(trimmed) ? trimmed : undefined;
-}
-
-function safeUrl(candidate: string): URL | undefined {
-	try {
-		return new URL(candidate);
-	} catch {
-		return undefined;
-	}
-}
-
-function normalizeHostname(hostname: string): string {
-	return hostname.replace(/^www\./i, "").toLowerCase();
 }
 
 function decodeHtmlEntities(value: string): string {
