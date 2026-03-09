@@ -94,7 +94,6 @@ function createForwardableEmailMessage(rawEmail: string): ForwardableEmailMessag
 
 function createEnv(overrides?: Partial<Env>): Env {
 	return {
-		OPENAI_API_KEY: "openai-test-key",
 		ANTHROPIC_API_KEY: "anthropic-test-key",
 		RESEND_API_KEY: "resend-test-key",
 		EMAIL_TO: "me@example.com",
@@ -283,22 +282,6 @@ describe("dedupe processing", () => {
 
 	it("processes the same email only once", async () => {
 		fetchMock.mockImplementation(async (input) => {
-			if (typeof input === "string" && input.includes("api.openai.com")) {
-				return new Response(
-					JSON.stringify({
-						output: [
-							{
-								type: "message",
-								content: [
-									{ type: "output_text", text: "A concise summary." },
-								],
-							},
-						],
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				);
-			}
-
 			if (typeof input === "string" && input.includes("api.anthropic.com")) {
 				return new Response(
 					JSON.stringify({
@@ -326,8 +309,8 @@ describe("dedupe processing", () => {
 		await processIncomingEmail(messageOne, env);
 		await processIncomingEmail(messageTwo, env);
 
-		// OpenAI + Anthropic + Resend = 3 calls (second email is deduped)
-		expect(fetchMock).toHaveBeenCalledTimes(3);
+		// Anthropic + Resend = 2 calls (second email is deduped)
+		expect(fetchMock).toHaveBeenCalledTimes(2);
 
 		const resendCall = fetchMock.mock.calls.find(
 			([input]) => typeof input === "string" && input.includes("resend.com"),
@@ -336,14 +319,6 @@ describe("dedupe processing", () => {
 		expect(resendCall?.[1]?.headers).toMatchObject({
 			"Idempotency-Key": expect.stringMatching(/^email:[a-f0-9]{64}$/),
 		});
-
-		const openAiCall = fetchMock.mock.calls.find(
-			([input]) => typeof input === "string" && input.includes("api.openai.com"),
-		);
-		expect(openAiCall).toBeTruthy();
-		expect(openAiCall?.[1]?.body).toEqual(
-			expect.stringContaining('"model":"gpt-5.4"'),
-		);
 
 		const anthropicCall = fetchMock.mock.calls.find(
 			([input]) => typeof input === "string" && input.includes("api.anthropic.com"),
@@ -518,19 +493,6 @@ describe("RSS feed processing", () => {
 			if (typeof input === "string" && input.includes("example.com/feed")) {
 				return new Response(feedXml, { status: 200 });
 			}
-			if (typeof input === "string" && input.includes("api.openai.com")) {
-				return new Response(
-					JSON.stringify({
-						output: [
-							{
-								type: "message",
-								content: [{ type: "output_text", text: "A summary of the new post." }],
-							},
-						],
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				);
-			}
 			if (typeof input === "string" && input.includes("api.anthropic.com")) {
 				return new Response(
 					JSON.stringify({
@@ -554,8 +516,8 @@ describe("RSS feed processing", () => {
 
 		await processRssFeeds(env);
 
-		// Feed fetch + OpenAI + Anthropic + Resend = 4 calls
-		expect(fetchMock).toHaveBeenCalledTimes(4);
+		// Feed fetch + Anthropic + Resend = 3 calls
+		expect(fetchMock).toHaveBeenCalledTimes(3);
 
 		const resendCall = fetchMock.mock.calls.find(
 			([input]) => typeof input === "string" && input.includes("resend.com"),
@@ -614,19 +576,6 @@ describe("POST /api/save", () => {
 
 	it("returns duplicate on second save of same URL", async () => {
 		fetchMock.mockImplementation(async (input) => {
-			if (typeof input === "string" && input.includes("api.openai.com")) {
-				return new Response(
-					JSON.stringify({
-						output: [
-							{
-								type: "message",
-								content: [{ type: "output_text", text: "A summary." }],
-							},
-						],
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				);
-			}
 			if (typeof input === "string" && input.includes("api.anthropic.com")) {
 				return new Response(
 					JSON.stringify({
@@ -668,25 +617,12 @@ describe("POST /api/save", () => {
 		const data2 = await resp2.json();
 		expect(data2).toMatchObject({ ok: true, status: "duplicate" });
 
-		// Only one OpenAI + Anthropic + Resend call set
-		expect(fetchMock).toHaveBeenCalledTimes(3);
+		// Only one Anthropic + Resend call set
+		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 
-	it("calls OpenAI, Anthropic, and Resend with correct content", async () => {
+	it("calls Anthropic and Resend with correct content", async () => {
 		fetchMock.mockImplementation(async (input) => {
-			if (typeof input === "string" && input.includes("api.openai.com")) {
-				return new Response(
-					JSON.stringify({
-						output: [
-							{
-								type: "message",
-								content: [{ type: "output_text", text: "GPT summary of the article." }],
-							},
-						],
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				);
-			}
 			if (typeof input === "string" && input.includes("api.anthropic.com")) {
 				return new Response(
 					JSON.stringify({
@@ -718,14 +654,6 @@ describe("POST /api/save", () => {
 		const resp = await handleApiSave(req, env);
 		expect(resp.status).toBe(200);
 
-		const openAiCall = fetchMock.mock.calls.find(
-			([input]) => typeof input === "string" && input.includes("api.openai.com"),
-		);
-		expect(openAiCall).toBeTruthy();
-		const openAiBody = JSON.parse(openAiCall![1]!.body as string);
-		expect(openAiBody.input[0].content[0].text).toContain("Paywalled Article");
-		expect(openAiBody.input[0].content[0].text).toContain("Premium News");
-
 		const anthropicCall = fetchMock.mock.calls.find(
 			([input]) => typeof input === "string" && input.includes("api.anthropic.com"),
 		);
@@ -741,7 +669,6 @@ describe("POST /api/save", () => {
 		const resendBody = JSON.parse(resendCall![1]!.body as string);
 		expect(resendBody.subject).toContain("Paywalled Article");
 		expect(resendBody.to).toBe("me@example.com");
-		expect(resendBody.html).toContain("GPT-5.4");
-		expect(resendBody.html).toContain("Sonnet 4.6");
+		expect(resendBody.html).toContain("Claude summary of the article.");
 	});
 });

@@ -5,18 +5,16 @@ A Cloudflare Worker that summarizes forwarded newsletter emails and RSS feed art
 ## How It Works
 
 ```text
-Gmail Filter -> Cloudflare Email Routing -> Worker -> OpenAI + Anthropic -> Resend -> Gmail
-Cron (every 30 min)  -> RSS Feeds        -> Worker -> OpenAI + Anthropic -> Resend -> Gmail
-Chrome Extension -> Readability.js       -> Worker -> OpenAI + Anthropic -> Resend -> Gmail
+Gmail Filter -> Cloudflare Email Routing -> Worker -> Anthropic -> Resend -> Gmail
+Cron (every 30 min)  -> RSS Feeds        -> Worker -> Anthropic -> Resend -> Gmail
+Chrome Extension -> Readability.js       -> Worker -> Anthropic -> Resend -> Gmail
 ```
 
-**Dual-model summaries:** Each article is summarized by both OpenAI `gpt-5.4` and Anthropic `claude-sonnet-4-6` in parallel. The summary email displays both results side by side with model labels so you can compare them.
+**Email path:** Gmail keeps the original newsletter in your inbox. A Gmail filter forwards matching senders to a Cloudflare-managed email address, the Worker parses the message body, summarizes with `claude-sonnet-4-6`, and Resend sends the summary back to you.
 
-**Email path:** Gmail keeps the original newsletter in your inbox. A Gmail filter forwards matching senders to a Cloudflare-managed email address, the Worker parses the message body, summarizes with both models, and Resend sends the summary back to you.
+**RSS path:** A Cloudflare Cron Trigger runs every 30 minutes, fetches configured RSS/Atom feeds, extracts new articles, summarizes them, and emails the summaries via Resend. Already-processed items are skipped using the same KV dedup store.
 
-**RSS path:** A Cloudflare Cron Trigger runs every 30 minutes, fetches configured RSS/Atom feeds, extracts new articles, summarizes them with both models, and emails the summaries via Resend. Already-processed items are skipped using the same KV dedup store.
-
-**Chrome extension path:** A Manifest V3 Chrome extension lets you save any article — including paywalled pages you're logged into — by clicking "Summarize This Page." The extension uses Mozilla's Readability.js to extract the article content in-browser, then POSTs it to the Worker's `POST /api/save` endpoint with Bearer token auth. The Worker deduplicates, summarizes with both models, and emails the result.
+**Chrome extension path:** A Manifest V3 Chrome extension lets you save any article — including paywalled pages you're logged into — by clicking "Summarize This Page." The extension uses Mozilla's Readability.js to extract the article content in-browser, then POSTs it to the Worker's `POST /api/save` endpoint with Bearer token auth. The Worker deduplicates, summarizes, and emails the result.
 
 ## Setup
 
@@ -43,7 +41,6 @@ npm run deploy
 ### 2. Set Worker secrets
 
 ```sh
-npx wrangler secret put OPENAI_API_KEY
 npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put RESEND_API_KEY
 npx wrangler secret put EMAIL_TO
@@ -55,7 +52,7 @@ npx wrangler secret put API_KEY
 
 - `EMAIL_TO`: the Gmail address that should receive summary emails.
 - `SUMMARY_FROM`: a verified Resend sender on your domain. The Worker sends emails from `Newsletter Summary <SUMMARY_FROM>` for forwarded emails or `Blog Post Summary <SUMMARY_FROM>` for RSS feed items.
-- The Worker currently truncates extracted email text to 80,000 characters before summarization and caps model output at 1,024 tokens. Those are application guardrails for cost and latency, not GPT-5.4 model limits.
+- The Worker currently truncates extracted email text to 80,000 characters before summarization and caps model output at 1,024 tokens.
 
 ### 3. Configure RSS feeds (optional)
 

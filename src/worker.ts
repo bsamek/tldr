@@ -2,7 +2,6 @@ import { XMLParser } from "fast-xml-parser";
 import PostalMime, { type Address, type Email as ParsedEmail } from "postal-mime";
 
 export interface Env {
-	OPENAI_API_KEY: string;
 	ANTHROPIC_API_KEY: string;
 	RESEND_API_KEY: string;
 	EMAIL_TO: string;
@@ -42,13 +41,11 @@ const RSS_FETCH_TIMEOUT_MS = 10_000;
 const RSS_MAX_ITEMS_PER_FEED = 5;
 
 const HEALTH_PATH = "/healthz";
-// App-side guardrail for cost and latency; GPT-5.4 can handle far more context.
 const MAX_SUMMARY_INPUT_CHARS = 80_000;
 const DEDUPE_TTL_SECONDS = 60 * 60 * 24 * 7;
 const NEWSLETTER_SUMMARY_PREFIX = "Newsletter Summary";
 const BLOG_POST_SUMMARY_PREFIX = "Blog Post Summary";
-const SUMMARY_MODEL = "gpt-5.4";
-const CLAUDE_MODEL = "claude-sonnet-4-6";
+const SUMMARY_MODEL = "claude-sonnet-4-6";
 const SUMMARY_MAX_OUTPUT_TOKENS = 1024;
 
 const FOOTER_BREAK_PATTERNS = [
@@ -201,13 +198,12 @@ export async function handleApiSave(
 	const truncatedContent = body.content.slice(0, MAX_SUMMARY_INPUT_CHARS);
 	const sender = body.siteName || new URL(body.url).hostname;
 
-	const summaries = await summarizeDual(
+	const summary = await summarizeWithClaude(
 		{
 			subject: body.title,
 			sender,
 			content: truncatedContent,
 		},
-		env.OPENAI_API_KEY,
 		env.ANTHROPIC_API_KEY,
 	);
 
@@ -215,7 +211,7 @@ export async function handleApiSave(
 		{
 			subject: body.title,
 			sender,
-			...summaries,
+			summary,
 		},
 		env,
 		dedupeKey,
@@ -308,13 +304,12 @@ export async function processIncomingEmail(
 		return;
 	}
 
-	const summaries = await summarizeDual(
+	const summary = await summarizeWithClaude(
 		{
 			subject: metadata.subject,
 			sender: formatSender(metadata),
 			content,
 		},
-		env.OPENAI_API_KEY,
 		env.ANTHROPIC_API_KEY,
 	);
 
@@ -322,7 +317,7 @@ export async function processIncomingEmail(
 		{
 			subject: metadata.subject,
 			sender: formatSender(metadata),
-			...summaries,
+			summary,
 		},
 		env,
 		dedupeKey,
@@ -405,73 +400,6 @@ export async function recordProcessedEmail(
 	});
 }
 
-export async function summarizeEmail(
-	input: {
-		subject: string;
-		sender: string;
-		content: string;
-	},
-	apiKey: string,
-): Promise<string> {
-	const resp = await fetch("https://api.openai.com/v1/responses", {
-		method: "POST",
-		headers: {
-			Authorization: `Bearer ${apiKey}`,
-			"Content-Type": "application/json",
-		},
-		body: JSON.stringify({
-			model: SUMMARY_MODEL,
-			reasoning: {
-				effort: "none",
-			},
-			max_output_tokens: SUMMARY_MAX_OUTPUT_TOKENS,
-			instructions:
-				"Summarize the following forwarded newsletter or article email in 3-5 concise prose paragraphs. Write in plain prose with no headers, no labels, and no bullet points.",
-			input: [
-				{
-					role: "user",
-					content: [
-						{
-							type: "input_text",
-							text: `Email subject: ${input.subject}
-Email sender: ${input.sender}
-
-Email content:
-${input.content.slice(0, MAX_SUMMARY_INPUT_CHARS)}`,
-						},
-					],
-				},
-			],
-		}),
-	});
-
-	if (!resp.ok) {
-		throw new Error(
-			`OpenAI Responses API error: ${resp.status} ${await resp.text()}`,
-		);
-	}
-
-	const data = (await resp.json()) as {
-		output?: {
-			type: string;
-			content?: {
-				type: string;
-				text?: string;
-			}[];
-		}[];
-	};
-	const summary = data.output
-		?.flatMap((item) => (item.type === "message" ? item.content || [] : []))
-		.find((item) => item.type === "output_text")
-		?.text?.trim();
-
-	if (!summary) {
-		throw new Error("OpenAI Responses API returned no text content");
-	}
-
-	return summary;
-}
-
 export async function summarizeWithClaude(
 	input: {
 		subject: string;
@@ -488,7 +416,7 @@ export async function summarizeWithClaude(
 			"Content-Type": "application/json",
 		},
 		body: JSON.stringify({
-			model: CLAUDE_MODEL,
+			model: SUMMARY_MODEL,
 			max_tokens: SUMMARY_MAX_OUTPUT_TOKENS,
 			system:
 				"Summarize the following forwarded newsletter or article email in 3-5 concise prose paragraphs. Write in plain prose with no headers, no labels, and no bullet points.",
@@ -521,28 +449,11 @@ export async function summarizeWithClaude(
 	return summary;
 }
 
-export async function summarizeDual(
-	input: {
-		subject: string;
-		sender: string;
-		content: string;
-	},
-	openaiApiKey: string,
-	anthropicApiKey: string,
-): Promise<{ gptSummary: string; claudeSummary: string }> {
-	const [gptSummary, claudeSummary] = await Promise.all([
-		summarizeEmail(input, openaiApiKey),
-		summarizeWithClaude(input, anthropicApiKey),
-	]);
-	return { gptSummary, claudeSummary };
-}
-
 export async function sendSummaryEmail(
 	input: {
 		subject: string;
 		sender: string;
-		gptSummary: string;
-		claudeSummary: string;
+		summary: string;
 	},
 	env: Env,
 	dedupeKey: string,
@@ -564,8 +475,7 @@ export async function sendSummaryEmail(
 export function renderSummaryHtml(input: {
 	subject: string;
 	sender: string;
-	gptSummary: string;
-	claudeSummary: string;
+	summary: string;
 }, summaryPrefix: string = NEWSLETTER_SUMMARY_PREFIX): string {
 	const renderParagraphs = (text: string) =>
 		text
@@ -585,11 +495,7 @@ export function renderSummaryHtml(input: {
       <p style="margin:0 0 12px; font-size:12px; letter-spacing:0.12em; text-transform:uppercase; color:#9a6b2f;">${summaryPrefix}</p>
       <h1 style="margin:0 0 12px; font-size:30px; line-height:1.2; color:#111827;">${escapeHtml(input.subject)}</h1>
       <p style="margin:0 0 24px; line-height:1.6; color:#4b5563;">From ${escapeHtml(input.sender)}</p>
-      <h2 style="margin:0 0 12px; font-size:16px; letter-spacing:0.06em; text-transform:uppercase; color:#9a6b2f;">GPT-5.4</h2>
-      ${renderParagraphs(input.gptSummary)}
-      <hr style="border:none; border-top:1px solid #e5dccf; margin:24px 0;">
-      <h2 style="margin:0 0 12px; font-size:16px; letter-spacing:0.06em; text-transform:uppercase; color:#9a6b2f;">Sonnet 4.6</h2>
-      ${renderParagraphs(input.claudeSummary)}
+      ${renderParagraphs(input.summary)}
     </div>
   </body>
 </html>`;
@@ -598,19 +504,10 @@ export function renderSummaryHtml(input: {
 export function renderSummaryText(input: {
 	subject: string;
 	sender: string;
-	gptSummary: string;
-	claudeSummary: string;
+	summary: string;
 }): string {
 	return [
-		"## GPT-5.4",
-		"",
-		input.gptSummary.trim(),
-		"",
-		"---",
-		"",
-		"## Sonnet 4.6",
-		"",
-		input.claudeSummary.trim(),
+		input.summary.trim(),
 		"",
 		"---",
 		`From: ${input.sender}`,
@@ -994,13 +891,12 @@ export async function processRssFeeds(env: Env): Promise<void> {
 					continue;
 				}
 
-				const summaries = await summarizeDual(
+				const summary = await summarizeWithClaude(
 					{
 						subject: item.title,
 						sender: item.feedName,
 						content: item.content,
 					},
-					env.OPENAI_API_KEY,
 					env.ANTHROPIC_API_KEY,
 				);
 
@@ -1008,7 +904,7 @@ export async function processRssFeeds(env: Env): Promise<void> {
 					{
 						subject: item.title,
 						sender: item.feedName,
-						...summaries,
+						summary,
 					},
 					env,
 					dedupeKey,
