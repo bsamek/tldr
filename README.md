@@ -10,7 +10,7 @@ Cron (every 30 min)  -> RSS Feeds        -> Worker -> OpenAI + Anthropic -> Rese
 Chrome Extension -> Readability.js       -> Worker -> OpenAI + Anthropic -> Resend -> Gmail
 ```
 
-**Dual-model summaries:** Each article is summarized by both OpenAI `gpt-5.4` and Anthropic `claude-haiku-4-5` in parallel. The summary email displays both results side by side with model labels so you can compare them.
+**Dual-model summaries:** Each article is summarized by both OpenAI `gpt-5.4` and Anthropic `claude-sonnet-4-6` in parallel. The summary email displays both results side by side with model labels so you can compare them.
 
 **Email path:** Gmail keeps the original newsletter in your inbox. A Gmail filter forwards matching senders to a Cloudflare-managed email address, the Worker parses the message body, summarizes with both models, and Resend sends the summary back to you.
 

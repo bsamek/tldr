@@ -302,7 +302,7 @@ describe("dedupe processing", () => {
 			if (typeof input === "string" && input.includes("api.anthropic.com")) {
 				return new Response(
 					JSON.stringify({
-						content: [{ type: "text", text: "A Haiku summary." }],
+						content: [{ type: "text", text: "A Claude summary." }],
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				);
@@ -350,7 +350,7 @@ describe("dedupe processing", () => {
 		);
 		expect(anthropicCall).toBeTruthy();
 		expect(anthropicCall?.[1]?.body).toEqual(
-			expect.stringContaining('"model":"claude-haiku-4-5"'),
+			expect.stringContaining('"model":"claude-sonnet-4-6"'),
 		);
 	});
 });
@@ -534,7 +534,7 @@ describe("RSS feed processing", () => {
 			if (typeof input === "string" && input.includes("api.anthropic.com")) {
 				return new Response(
 					JSON.stringify({
-						content: [{ type: "text", text: "A Haiku summary of the new post." }],
+						content: [{ type: "text", text: "A Claude summary of the new post." }],
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				);
@@ -630,7 +630,7 @@ describe("POST /api/save", () => {
 			if (typeof input === "string" && input.includes("api.anthropic.com")) {
 				return new Response(
 					JSON.stringify({
-						content: [{ type: "text", text: "A Haiku summary." }],
+						content: [{ type: "text", text: "A Claude summary." }],
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				);
@@ -690,7 +690,7 @@ describe("POST /api/save", () => {
 			if (typeof input === "string" && input.includes("api.anthropic.com")) {
 				return new Response(
 					JSON.stringify({
-						content: [{ type: "text", text: "Haiku summary of the article." }],
+						content: [{ type: "text", text: "Claude summary of the article." }],
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				);
@@ -742,6 +742,6 @@ describe("POST /api/save", () => {
 		expect(resendBody.subject).toContain("Paywalled Article");
 		expect(resendBody.to).toBe("me@example.com");
 		expect(resendBody.html).toContain("GPT-5.4");
-		expect(resendBody.html).toContain("Haiku 4.5");
+		expect(resendBody.html).toContain("Sonnet 4.6");
 	});
 });
