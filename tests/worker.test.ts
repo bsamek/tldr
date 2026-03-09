@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	extractOriginalArticleUrl,
 	extractSummaryContent,
+	handleGmailForwardingConfirmation,
 	isGmailForwardingConfirmation,
 	processIncomingEmail,
 	type EmailMetadata,
@@ -156,6 +157,44 @@ describe("gmail forwarding detection", () => {
 		});
 
 		expect(isGmailForwardingConfirmation(headers)).toBe(true);
+	});
+
+	it("falls back to Resend when native forwarding fails", async () => {
+		const fetchMock = vi.fn<typeof fetch>();
+		vi.stubGlobal("fetch", fetchMock);
+
+		fetchMock.mockResolvedValue(
+			new Response(JSON.stringify({ id: "email_123" }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+
+		const message = createForwardableEmailMessage(
+			createRawEmail({
+				from: "Gmail Team <forwarding-noreply@google.com>",
+				subject: "Gmail Forwarding Confirmation - Receive Mail from another address",
+				html: `<p>Click this link to confirm forwarding:</p><p><a href="https://mail-settings.google.com/mail/vf-confirm?token=abc">Confirm</a></p>`,
+			}),
+		);
+		message.forward = vi.fn(async () => {
+			throw new Error("forward failed");
+		});
+
+		await handleGmailForwardingConfirmation(message, createEnv());
+
+		expect(message.forward).toHaveBeenCalledWith("me@example.com");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		const [url, init] = fetchMock.mock.calls[0];
+		expect(url).toBe("https://api.resend.com/emails");
+		expect(init?.method).toBe("POST");
+		expect(init?.body).toEqual(
+			expect.stringContaining("Gmail Forwarding Confirmation"),
+		);
+		expect(init?.body).toEqual(
+			expect.stringContaining("mail-settings.google.com"),
+		);
 	});
 });
 

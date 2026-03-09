@@ -6,8 +6,8 @@ compatibility_date = "2024-12-30"
 # Worker's exported email() function.
 [[kv_namespaces]]
 binding = "PROCESSED_EMAILS"
-id = "replace-with-production-kv-id"
-preview_id = "replace-with-preview-kv-id"
+id = "166270223041423f90e276ecaa9b1d86"
+preview_id = "5160d02695ca400f8c737c71516b0d7c"
 
 # Cloudflare's local Email Worker tooling expects a send_email binding even if
 # production delivery happens through Resend.

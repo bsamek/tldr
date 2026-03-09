@@ -69,6 +69,9 @@ In local development, Cloudflare exposes the email handler at `/cdn-cgi/handler/
 
 ```sh
 curl -X POST http://127.0.0.1:8787/cdn-cgi/handler/email \
+  --url-query 'from=sender@example.com' \
+  --url-query 'to=newsletters@your-domain.com' \
+  -H 'Content-Type: message/rfc822' \
   --data-binary @sample.eml
 ```
 

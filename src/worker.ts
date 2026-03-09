@@ -111,7 +111,11 @@ export default {
 		ctx: ExecutionContext,
 	): Promise<void> {
 		if (isGmailForwardingConfirmation(message.headers)) {
-			await message.forward(env.EMAIL_TO);
+			ctx.waitUntil(
+				handleGmailForwardingConfirmation(message, env).catch((error) => {
+					console.error("Gmail forwarding confirmation handling failed:", error);
+				}),
+			);
 			return;
 		}
 
@@ -122,6 +126,53 @@ export default {
 		);
 	},
 };
+
+export async function handleGmailForwardingConfirmation(
+	message: ForwardableEmailMessage,
+	env: Env,
+): Promise<void> {
+	try {
+		await message.forward(env.EMAIL_TO);
+		return;
+	} catch (error) {
+		console.error(
+			"Native forward failed for Gmail confirmation email; falling back to Resend.",
+			error,
+		);
+	}
+
+	const raw = await new Response(message.raw).arrayBuffer();
+	const parsed = await PostalMime.parse(raw);
+	const subject = sanitizeSubject(
+		sanitizeHeaderValue(parsed.subject || message.headers.get("subject")) ||
+			"Gmail Forwarding Confirmation",
+	);
+	const sender = parsed.from
+		? formatMailbox(selectMailbox(parsed.from))
+		: sanitizeHeaderValue(message.headers.get("from")) || GMAIL_FORWARDING_FROM;
+	const html = parsed.html?.trim();
+	const text = parsed.text?.trim() || stripHtml(html || "").trim();
+
+	await sendResendEmail(
+		{
+			from: formatSummaryFrom(env.SUMMARY_FROM),
+			to: env.EMAIL_TO,
+			subject: `Fwd: ${subject}`,
+			html: renderForwardingConfirmationHtml({
+				subject,
+				sender,
+				html,
+				text,
+			}),
+			text: renderForwardingConfirmationText({
+				subject,
+				sender,
+				text,
+			}),
+		},
+		env.RESEND_API_KEY,
+	);
+}
 
 export async function processIncomingEmail(
 	message: ForwardableEmailMessage,
@@ -414,25 +465,17 @@ export async function sendSummaryEmail(
 	env: Env,
 	dedupeKey: string,
 ): Promise<void> {
-	const resp = await fetch("https://api.resend.com/emails", {
-		method: "POST",
-		headers: {
-			Authorization: `Bearer ${env.RESEND_API_KEY}`,
-			"Content-Type": "application/json",
-			"Idempotency-Key": dedupeKey,
-		},
-		body: JSON.stringify({
+	await sendResendEmail(
+		{
 			from: formatSummaryFrom(env.SUMMARY_FROM),
 			to: env.EMAIL_TO,
 			subject: `${SUMMARY_PREFIX}: ${sanitizeSubject(input.subject)}`,
 			html: renderSummaryHtml(input),
 			text: renderSummaryText(input),
-		}),
-	});
-
-	if (!resp.ok) {
-		throw new Error(`Resend API error: ${resp.status} ${await resp.text()}`);
-	}
+		},
+		env.RESEND_API_KEY,
+		dedupeKey,
+	);
 }
 
 export function renderSummaryHtml(input: {
@@ -489,6 +532,46 @@ export function renderSummaryText(input: {
 	return lines.join("\n");
 }
 
+export function renderForwardingConfirmationHtml(input: {
+	subject: string;
+	sender: string;
+	html?: string;
+	text?: string;
+}): string {
+	const originalContent = input.html
+		? input.html
+		: `<pre style="margin:0; white-space:pre-wrap; line-height:1.6; color:#1f2937;">${escapeHtml(input.text || "")}</pre>`;
+
+	return `<!doctype html>
+<html lang="en">
+  <body style="margin:0; padding:24px; background:#f4f1ea; font-family: Georgia, 'Times New Roman', serif; color:#111827;">
+    <div style="max-width:680px; margin:0 auto; background:#fffdf8; border:1px solid #e5dccf; border-radius:16px; padding:32px;">
+      <p style="margin:0 0 12px; font-size:12px; letter-spacing:0.12em; text-transform:uppercase; color:#9a6b2f;">Forwarding Confirmation</p>
+      <h1 style="margin:0 0 12px; font-size:30px; line-height:1.2; color:#111827;">${escapeHtml(input.subject)}</h1>
+      <p style="margin:0 0 24px; line-height:1.6; color:#4b5563;">Originally sent by ${escapeHtml(input.sender)}</p>
+      <p style="margin:0 0 24px; line-height:1.7; color:#1f2937;">Cloudflare forwarding failed for the original Gmail confirmation email, so this copy was resent through Resend. Use the confirmation link or code below to finish Gmail forwarding setup.</p>
+      <div style="line-height:1.6; color:#1f2937;">${originalContent}</div>
+    </div>
+  </body>
+</html>`;
+}
+
+export function renderForwardingConfirmationText(input: {
+	subject: string;
+	sender: string;
+	text?: string;
+}): string {
+	return [
+		"Cloudflare forwarding failed for the original Gmail confirmation email, so this copy was resent through Resend.",
+		"Use the confirmation link or code below to finish Gmail forwarding setup.",
+		"",
+		`Subject: ${input.subject}`,
+		`From: ${input.sender}`,
+		"",
+		input.text?.trim() || "(No text content was available in the original email.)",
+	].join("\n");
+}
+
 function jsonResponse(data: Record<string, unknown>, status = 200): Response {
 	return new Response(JSON.stringify(data), {
 		status,
@@ -523,6 +606,14 @@ function formatSender(metadata: EmailMetadata): string {
 	}
 
 	return metadata.fromName || metadata.fromAddress || "Unknown sender";
+}
+
+function formatMailbox(mailbox: { name: string; address: string }): string {
+	if (mailbox.name && mailbox.address) {
+		return `${mailbox.name} <${mailbox.address}>`;
+	}
+
+	return mailbox.name || mailbox.address || "Unknown sender";
 }
 
 function formatSummaryFrom(summaryFrom: string): string {
@@ -622,4 +713,35 @@ function escapeHtml(value: string): string {
 		.replace(/>/g, "&gt;")
 		.replace(/"/g, "&quot;")
 		.replace(/'/g, "&#39;");
+}
+
+async function sendResendEmail(
+	input: {
+		from: string;
+		to: string;
+		subject: string;
+		html: string;
+		text: string;
+	},
+	apiKey: string,
+	idempotencyKey?: string,
+): Promise<void> {
+	const headers: Record<string, string> = {
+		Authorization: `Bearer ${apiKey}`,
+		"Content-Type": "application/json",
+	};
+
+	if (idempotencyKey) {
+		headers["Idempotency-Key"] = idempotencyKey;
+	}
+
+	const resp = await fetch("https://api.resend.com/emails", {
+		method: "POST",
+		headers,
+		body: JSON.stringify(input),
+	});
+
+	if (!resp.ok) {
+		throw new Error(`Resend API error: ${resp.status} ${await resp.text()}`);
+	}
 }
