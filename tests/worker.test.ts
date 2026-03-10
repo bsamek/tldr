@@ -9,6 +9,8 @@ import {
 	parseFeedItems,
 	processIncomingEmail,
 	processRssFeeds,
+	sendPushoverNotification,
+	sendSummaryEmail,
 	type EmailMetadata,
 	type Env,
 	type RssItem,
@@ -670,5 +672,116 @@ describe("POST /api/save", () => {
 		expect(resendBody.subject).toContain("Paywalled Article");
 		expect(resendBody.to).toBe("me@example.com");
 		expect(resendBody.html).toContain("Claude summary of the article.");
+	});
+});
+
+describe("Pushover notifications", () => {
+	const fetchMock = vi.fn<typeof fetch>();
+
+	beforeEach(() => {
+		fetchMock.mockReset();
+		vi.stubGlobal("fetch", fetchMock);
+	});
+
+	it("sends a push notification via Pushover API", async () => {
+		fetchMock.mockResolvedValue(
+			new Response(JSON.stringify({ status: 1 }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+
+		await sendPushoverNotification(
+			{ title: "Newsletter Summary: Test", message: "A summary." },
+			"user-key-123",
+			"api-token-456",
+		);
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		const [url, init] = fetchMock.mock.calls[0];
+		expect(url).toBe("https://api.pushover.net/1/messages.json");
+		expect(init?.method).toBe("POST");
+		const body = JSON.parse(init!.body as string);
+		expect(body).toMatchObject({
+			token: "api-token-456",
+			user: "user-key-123",
+			title: "Newsletter Summary: Test",
+			message: "A summary.",
+		});
+	});
+
+	it("throws on Pushover API error", async () => {
+		fetchMock.mockResolvedValue(
+			new Response("invalid token", { status: 400 }),
+		);
+
+		await expect(
+			sendPushoverNotification(
+				{ title: "Test", message: "Body" },
+				"bad-key",
+				"bad-token",
+			),
+		).rejects.toThrow("Pushover API error: 400");
+	});
+
+	it("sends Pushover notification after summary email when configured", async () => {
+		fetchMock.mockImplementation(async (input) => {
+			if (typeof input === "string" && input.includes("resend.com")) {
+				return new Response(JSON.stringify({ id: "email_1" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			if (typeof input === "string" && input.includes("pushover.net")) {
+				return new Response(JSON.stringify({ status: 1 }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			throw new Error(`Unexpected fetch: ${String(input)}`);
+		});
+
+		const env = createEnv({
+			PUSHOVER_USER_KEY: "user-key",
+			PUSHOVER_API_TOKEN: "api-token",
+		});
+
+		await sendSummaryEmail(
+			{ subject: "Test Article", sender: "blog@example.com", summary: "A summary." },
+			env,
+			"dedup-key-1",
+		);
+
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+
+		const pushoverCall = fetchMock.mock.calls.find(
+			([input]) => typeof input === "string" && input.includes("pushover.net"),
+		);
+		expect(pushoverCall).toBeTruthy();
+		const body = JSON.parse(pushoverCall![1]!.body as string);
+		expect(body.token).toBe("api-token");
+		expect(body.user).toBe("user-key");
+		expect(body.title).toContain("Test Article");
+	});
+
+	it("does not send Pushover notification when not configured", async () => {
+		fetchMock.mockResolvedValue(
+			new Response(JSON.stringify({ id: "email_1" }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+
+		const env = createEnv();
+
+		await sendSummaryEmail(
+			{ subject: "Test", sender: "blog@example.com", summary: "A summary." },
+			env,
+			"dedup-key-2",
+		);
+
+		// Only Resend, no Pushover
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock.mock.calls[0][0]).toContain("resend.com");
 	});
 });

@@ -9,6 +9,8 @@ export interface Env {
 	PROCESSED_EMAILS: KVNamespace;
 	RSS_FEEDS: string;
 	API_KEY: string;
+	PUSHOVER_USER_KEY?: string;
+	PUSHOVER_API_TOKEN?: string;
 }
 
 export interface RssFeedConfig {
@@ -470,6 +472,42 @@ export async function sendSummaryEmail(
 		env.RESEND_API_KEY,
 		dedupeKey,
 	);
+
+	if (env.PUSHOVER_USER_KEY && env.PUSHOVER_API_TOKEN) {
+		await sendPushoverNotification(
+			{
+				title: `${summaryPrefix}: ${sanitizeSubject(input.subject)}`,
+				message: input.summary.slice(0, 1024),
+			},
+			env.PUSHOVER_USER_KEY,
+			env.PUSHOVER_API_TOKEN,
+		).catch((error) => {
+			console.error("Pushover notification failed:", error);
+		});
+	}
+}
+
+export async function sendPushoverNotification(
+	input: { title: string; message: string },
+	userKey: string,
+	apiToken: string,
+): Promise<void> {
+	const resp = await fetch("https://api.pushover.net/1/messages.json", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			token: apiToken,
+			user: userKey,
+			title: input.title,
+			message: input.message,
+		}),
+	});
+
+	if (!resp.ok) {
+		throw new Error(
+			`Pushover API error: ${resp.status} ${await resp.text()}`,
+		);
+	}
 }
 
 export function renderSummaryHtml(input: {

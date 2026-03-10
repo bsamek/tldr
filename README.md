@@ -57,7 +57,22 @@ npx wrangler secret put API_KEY
 - `SUMMARY_FROM`: a verified Resend sender on your domain. The Worker sends emails from `Newsletter Summary <SUMMARY_FROM>` for forwarded emails or `Blog Post Summary <SUMMARY_FROM>` for RSS feed items.
 - The Worker currently truncates extracted email text to 80,000 characters before summarization and caps model output at 1,024 tokens.
 
-### 3. Configure RSS feeds (optional)
+### 3. Configure Pushover notifications (optional)
+
+To receive an iOS push notification whenever a summary email is sent, set up [Pushover](https://pushover.net):
+
+1. Create a Pushover account and install the [Pushover iOS app](https://pushover.net/clients/ios) ($5 one-time purchase).
+2. Create an application in the [Pushover dashboard](https://pushover.net/apps/build) to get an API token.
+3. Set both secrets:
+
+```sh
+npx wrangler secret put PUSHOVER_USER_KEY
+npx wrangler secret put PUSHOVER_API_TOKEN
+```
+
+When both are configured, each summary email will also trigger a push notification with the article title and summary. If either secret is missing, notifications are silently skipped.
+
+### 4. Configure RSS feeds (optional)
 
 Set the `RSS_FEEDS` environment variable to a JSON array of feed configs:
 
@@ -68,7 +83,7 @@ npx wrangler secret put RSS_FEEDS
 
 **Do not** put your feed list in `wrangler.toml` — use `wrangler secret put` so it stays out of version control. The cron trigger runs every 30 minutes and processes up to 5 new items per feed per run.
 
-### 4. Configure Cloudflare Email Routing
+### 5. Configure Cloudflare Email Routing
 
 You need a domain using Cloudflare as the authoritative nameserver.
 
@@ -76,14 +91,14 @@ You need a domain using Cloudflare as the authoritative nameserver.
 2. Create an address such as `newsletters@your-domain.com` and route it to this Worker.
 3. Make sure `EMAIL_TO` is also a verified Cloudflare Email Routing destination address. The Worker forwards Gmail's forwarding-confirmation email there instead of trying to summarize it.
 
-### 5. Configure Gmail forwarding and filters
+### 6. Configure Gmail forwarding and filters
 
 1. In Gmail settings, add the Cloudflare address such as `newsletters@your-domain.com` as a forwarding address.
 2. Wait for Gmail's forwarding confirmation email to arrive in `EMAIL_TO`, then approve the forwarding address in Gmail.
 3. Create one or more Gmail filters for newsletter senders and choose `Forward it to` the Cloudflare address.
 4. Keep the filters narrow enough that they do not match the summary emails coming back from `SUMMARY_FROM`, or you will create a loop.
 
-### 6. Local development
+### 7. Local development
 
 ```sh
 npm run dev
@@ -112,14 +127,14 @@ npm run typecheck
 npm test
 ```
 
-### 7. Install the Chrome extension
+### 8. Install the Chrome extension
 
 1. Open `chrome://extensions` and enable **Developer mode**.
 2. Click **Load unpacked** and select the `extension/` directory.
 3. Click the extension icon, enter your Worker URL (e.g. `https://tldr.your-domain.workers.dev`) and the `API_KEY` you set above, then click **Save Settings**.
 4. Navigate to any article page and click **Summarize This Page**.
 
-### 8. Set up the iOS Shortcut (optional)
+### 9. Set up the iOS Shortcut (optional)
 
 This adds a "Summarize This Page" option to Safari's share sheet on iOS. Because the JavaScript runs inside your Safari session, it can extract full article text from paywalled pages you're logged into.
 
@@ -150,7 +165,7 @@ This adds a "Summarize This Page" option to Safari's share sheet on iOS. Because
 
 To use it: open any article in Safari, tap the **Share** button, and select **Summarize This Page** from the share sheet.
 
-### 9. Manual test
+### 10. Manual test
 
 Forward one newsletter sender to the Cloudflare address and confirm:
 
