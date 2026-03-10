@@ -794,7 +794,7 @@ export async function fetchFeed(config: RssFeedConfig): Promise<string> {
 	const timeout = setTimeout(() => controller.abort(), RSS_FETCH_TIMEOUT_MS);
 	try {
 		const resp = await fetch(config.url, {
-			headers: { "User-Agent": "readwise-summary-worker/1.0" },
+			headers: { "User-Agent": "tldr-worker/1.0" },
 			signal: controller.signal,
 		});
 		if (!resp.ok) {

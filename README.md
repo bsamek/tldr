@@ -1,6 +1,6 @@
-# Newsletter Email Summarizer
+# TLDR
 
-A Cloudflare Worker that summarizes forwarded newsletter emails and RSS feed articles, then sends per-item summaries back to your Gmail inbox.
+A Cloudflare Worker that summarizes forwarded newsletter emails, RSS feed articles, and web pages, then sends per-item summaries back to your Gmail inbox.
 
 ## How It Works
 
@@ -113,7 +113,7 @@ npm test
 
 1. Open `chrome://extensions` and enable **Developer mode**.
 2. Click **Load unpacked** and select the `extension/` directory.
-3. Click the extension icon, enter your Worker URL (e.g. `https://readwise-summary.your-domain.workers.dev`) and the `API_KEY` you set above, then click **Save Settings**.
+3. Click the extension icon, enter your Worker URL (e.g. `https://tldr.your-domain.workers.dev`) and the `API_KEY` you set above, then click **Save Settings**.
 4. Navigate to any article page and click **Summarize This Page**.
 
 ### 8. Manual test
