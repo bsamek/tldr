@@ -11,6 +11,8 @@ export interface Env {
 	API_KEY: string;
 	PUSHOVER_USER_KEY?: string;
 	PUSHOVER_API_TOKEN?: string;
+	OPENAI_API_KEY?: string;
+	TTS_ENABLED?: string;
 }
 
 export interface RssFeedConfig {
@@ -49,6 +51,8 @@ const NEWSLETTER_SUMMARY_PREFIX = "Newsletter Summary";
 const BLOG_POST_SUMMARY_PREFIX = "Blog Post Summary";
 const SUMMARY_MODEL = "claude-sonnet-4-6";
 const SUMMARY_MAX_OUTPUT_TOKENS = 1024;
+const TTS_MODEL = "tts-1";
+const TTS_VOICE = "alloy";
 
 const FOOTER_BREAK_PATTERNS = [
 	/^\s*unsubscribe\b/i,
@@ -463,6 +467,27 @@ export async function sendSummaryEmail(
 	dedupeKey: string,
 	summaryPrefix: string = NEWSLETTER_SUMMARY_PREFIX,
 ): Promise<void> {
+	let attachments:
+		| Array<{ filename: string; content: string }>
+		| undefined;
+
+	if (env.TTS_ENABLED === "true" && env.OPENAI_API_KEY) {
+		try {
+			const audioBuffer = await generateTtsAudio(
+				input.summary,
+				env.OPENAI_API_KEY,
+			);
+			attachments = [
+				{
+					filename: "summary.mp3",
+					content: arrayBufferToBase64(audioBuffer),
+				},
+			];
+		} catch (error) {
+			console.error("TTS audio generation failed:", error);
+		}
+	}
+
 	await sendResendEmail(
 		{
 			from: formatSummaryFrom(env.SUMMARY_FROM, summaryPrefix),
@@ -470,6 +495,7 @@ export async function sendSummaryEmail(
 			subject: `${summaryPrefix}: ${sanitizeSubject(input.subject)}`,
 			html: renderSummaryHtml(input, summaryPrefix),
 			text: renderSummaryText(input),
+			attachments,
 		},
 		env.RESEND_API_KEY,
 		dedupeKey,
@@ -515,6 +541,42 @@ export async function sendPushoverNotification(
 			`Pushover API error: ${resp.status} ${await resp.text()}`,
 		);
 	}
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+	const bytes = new Uint8Array(buffer);
+	let binary = "";
+	for (let i = 0; i < bytes.byteLength; i++) {
+		binary += String.fromCharCode(bytes[i]);
+	}
+	return btoa(binary);
+}
+
+export async function generateTtsAudio(
+	text: string,
+	apiKey: string,
+): Promise<ArrayBuffer> {
+	const resp = await fetch("https://api.openai.com/v1/audio/speech", {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${apiKey}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({
+			model: TTS_MODEL,
+			voice: TTS_VOICE,
+			input: text,
+			response_format: "mp3",
+		}),
+	});
+
+	if (!resp.ok) {
+		throw new Error(
+			`OpenAI TTS API error: ${resp.status} ${await resp.text()}`,
+		);
+	}
+
+	return resp.arrayBuffer();
 }
 
 export function renderSummaryHtml(input: {
@@ -985,6 +1047,7 @@ async function sendResendEmail(
 		subject: string;
 		html: string;
 		text: string;
+		attachments?: Array<{ filename: string; content: string }>;
 	},
 	apiKey: string,
 	idempotencyKey?: string,

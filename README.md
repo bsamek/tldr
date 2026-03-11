@@ -5,10 +5,10 @@ A Cloudflare Worker that summarizes forwarded newsletter emails, RSS feed articl
 ## How It Works
 
 ```text
-Gmail Filter     -> Cloudflare Email Routing -> Worker -> Anthropic -> Resend -> Gmail
-Cron (every 30 min)  -> RSS Feeds           -> Worker -> Anthropic -> Resend -> Gmail
-Chrome Extension -> Readability.js          -> Worker -> Anthropic -> Resend -> Gmail
-iOS Shortcut     -> Safari JS extraction    -> Worker -> Anthropic -> Resend -> Gmail
+Gmail Filter     -> Cloudflare Email Routing -> Worker -> Anthropic -> [OpenAI TTS] -> Resend -> Gmail
+Cron (every 30 min)  -> RSS Feeds           -> Worker -> Anthropic -> [OpenAI TTS] -> Resend -> Gmail
+Chrome Extension -> Readability.js          -> Worker -> Anthropic -> [OpenAI TTS] -> Resend -> Gmail
+iOS Shortcut     -> Safari JS extraction    -> Worker -> Anthropic -> [OpenAI TTS] -> Resend -> Gmail
 ```
 
 **Email path:** Gmail keeps the original newsletter in your inbox. A Gmail filter forwards matching senders to a Cloudflare-managed email address, the Worker parses the message body, summarizes with `claude-sonnet-4-6`, and Resend sends the summary back to you.
@@ -74,7 +74,19 @@ npx wrangler secret put PUSHOVER_API_TOKEN
 
 When both are configured, each summary email will also trigger a push notification with the article title and summary. If either secret is missing, notifications are silently skipped.
 
-### 4. Configure RSS feeds (optional)
+### 4. Configure text-to-speech audio (optional)
+
+To receive an MP3 audio version of each summary attached to the email, enable [OpenAI TTS](https://platform.openai.com/docs/guides/text-to-speech):
+
+```sh
+npx wrangler secret put OPENAI_API_KEY
+npx wrangler secret put TTS_ENABLED
+# Enter: true
+```
+
+When both are configured, each summary email will include a `summary.mp3` attachment you can listen to. The default voice is `alloy` — you can change it by modifying the `TTS_VOICE` constant in `src/worker.ts` (options: alloy, echo, fable, onyx, nova, shimmer). Pricing is ~$0.00005 per summary ($15 per 1M characters). If TTS generation fails, the email is still sent without the attachment.
+
+### 5. Configure RSS feeds (optional)
 
 Set the `RSS_FEEDS` environment variable to a JSON array of feed configs:
 
@@ -85,7 +97,7 @@ npx wrangler secret put RSS_FEEDS
 
 **Do not** put your feed list in `wrangler.toml` — use `wrangler secret put` so it stays out of version control. The cron trigger runs every 30 minutes and processes up to 5 new items per feed per run.
 
-### 5. Configure Cloudflare Email Routing
+### 6. Configure Cloudflare Email Routing
 
 You need a domain using Cloudflare as the authoritative nameserver.
 
@@ -93,14 +105,14 @@ You need a domain using Cloudflare as the authoritative nameserver.
 2. Create an address such as `newsletters@your-domain.com` and route it to this Worker.
 3. Make sure `EMAIL_TO` is also a verified Cloudflare Email Routing destination address. The Worker forwards Gmail's forwarding-confirmation email there instead of trying to summarize it.
 
-### 6. Configure Gmail forwarding and filters
+### 7. Configure Gmail forwarding and filters
 
 1. In Gmail settings, add the Cloudflare address such as `newsletters@your-domain.com` as a forwarding address.
 2. Wait for Gmail's forwarding confirmation email to arrive in `EMAIL_TO`, then approve the forwarding address in Gmail.
 3. Create one or more Gmail filters for newsletter senders and choose `Forward it to` the Cloudflare address.
 4. Keep the filters narrow enough that they do not match the summary emails coming back from `SUMMARY_FROM`, or you will create a loop.
 
-### 7. Local development
+### 8. Local development
 
 ```sh
 npm run dev
@@ -129,14 +141,14 @@ npm run typecheck
 npm test
 ```
 
-### 8. Install the Chrome extension
+### 9. Install the Chrome extension
 
 1. Open `chrome://extensions` and enable **Developer mode**.
 2. Click **Load unpacked** and select the `extension/` directory.
 3. Click the extension icon, enter your Worker URL (e.g. `https://tldr.your-domain.workers.dev`) and the `API_KEY` you set above, then click **Save Settings**.
 4. Navigate to any article page and click **Summarize This Page**.
 
-### 9. Set up the iOS Shortcut (optional)
+### 10. Set up the iOS Shortcut (optional)
 
 This adds a "Summarize This Page" option to Safari's share sheet on iOS. Because the JavaScript runs inside your Safari session, it can extract full article text from paywalled pages you're logged into.
 
@@ -167,7 +179,7 @@ This adds a "Summarize This Page" option to Safari's share sheet on iOS. Because
 
 To use it: open any article in Safari, tap the **Share** button, and select **Summarize This Page** from the share sheet.
 
-### 10. Manual test
+### 11. Manual test
 
 Forward one newsletter sender to the Cloudflare address and confirm:
 
