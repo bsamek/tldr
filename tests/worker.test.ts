@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createRssDedupeKey,
 	extractSummaryContent,
+	generateTtsAudio,
 	handleApiSave,
 	handleGmailForwardingConfirmation,
 	isGmailForwardingConfirmation,
@@ -1000,5 +1001,176 @@ describe("article links in summaries", () => {
 		const resendBody = JSON.parse(resendCall![1]!.body as string);
 		expect(resendBody.html).not.toContain("Read original");
 		expect(resendBody.text).not.toContain("Link:");
+	});
+});
+
+describe("TTS audio generation", () => {
+	const fetchMock = vi.fn<typeof fetch>();
+
+	beforeEach(() => {
+		fetchMock.mockReset();
+		vi.stubGlobal("fetch", fetchMock);
+	});
+
+	it("returns MP3 bytes from OpenAI TTS API", async () => {
+		const fakeAudio = new Uint8Array([0xff, 0xfb, 0x90, 0x00]);
+		fetchMock.mockResolvedValue(
+			new Response(fakeAudio.buffer, {
+				status: 200,
+				headers: { "Content-Type": "audio/mpeg" },
+			}),
+		);
+
+		const result = await generateTtsAudio("Hello world", "openai-key-123");
+
+		expect(new Uint8Array(result)).toEqual(fakeAudio);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		const [url, init] = fetchMock.mock.calls[0];
+		expect(url).toBe("https://api.openai.com/v1/audio/speech");
+		expect(init?.method).toBe("POST");
+		const body = JSON.parse(init!.body as string);
+		expect(body).toMatchObject({
+			model: "tts-1",
+			voice: "alloy",
+			input: "Hello world",
+			response_format: "mp3",
+		});
+		expect(init!.headers).toMatchObject({
+			Authorization: "Bearer openai-key-123",
+		});
+	});
+
+	it("throws on OpenAI TTS API error", async () => {
+		fetchMock.mockResolvedValue(
+			new Response("rate limit exceeded", { status: 429 }),
+		);
+
+		await expect(
+			generateTtsAudio("Hello", "bad-key"),
+		).rejects.toThrow("OpenAI TTS API error: 429");
+	});
+
+	it("attaches MP3 to summary email when TTS is enabled", async () => {
+		const fakeAudio = new Uint8Array([0xff, 0xfb, 0x90, 0x00]);
+		fetchMock.mockImplementation(async (input) => {
+			if (typeof input === "string" && input.includes("api.openai.com")) {
+				return new Response(fakeAudio.buffer, {
+					status: 200,
+					headers: { "Content-Type": "audio/mpeg" },
+				});
+			}
+			if (typeof input === "string" && input.includes("resend.com")) {
+				return new Response(JSON.stringify({ id: "email_1" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			throw new Error(`Unexpected fetch: ${String(input)}`);
+		});
+
+		const env = createEnv({
+			OPENAI_API_KEY: "openai-key",
+			TTS_ENABLED: "true",
+		});
+
+		await sendSummaryEmail(
+			{ subject: "Test", sender: "blog@example.com", summary: "A summary." },
+			env,
+			"dedup-tts-1",
+		);
+
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		const resendCall = fetchMock.mock.calls.find(
+			([input]) => typeof input === "string" && input.includes("resend.com"),
+		);
+		const resendBody = JSON.parse(resendCall![1]!.body as string);
+		expect(resendBody.attachments).toBeDefined();
+		expect(resendBody.attachments).toHaveLength(1);
+		expect(resendBody.attachments[0].filename).toBe("summary.mp3");
+		expect(resendBody.attachments[0].content).toBeTruthy();
+	});
+
+	it("sends email without attachment when TTS is not configured", async () => {
+		fetchMock.mockResolvedValue(
+			new Response(JSON.stringify({ id: "email_1" }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+
+		const env = createEnv();
+
+		await sendSummaryEmail(
+			{ subject: "Test", sender: "blog@example.com", summary: "A summary." },
+			env,
+			"dedup-tts-2",
+		);
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock.mock.calls[0][0]).toContain("resend.com");
+		const resendBody = JSON.parse(fetchMock.mock.calls[0][1]!.body as string);
+		expect(resendBody.attachments).toBeUndefined();
+	});
+
+	it("sends email without attachment when TTS fails", async () => {
+		const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		fetchMock.mockImplementation(async (input) => {
+			if (typeof input === "string" && input.includes("api.openai.com")) {
+				return new Response("server error", { status: 500 });
+			}
+			if (typeof input === "string" && input.includes("resend.com")) {
+				return new Response(JSON.stringify({ id: "email_1" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			throw new Error(`Unexpected fetch: ${String(input)}`);
+		});
+
+		const env = createEnv({
+			OPENAI_API_KEY: "openai-key",
+			TTS_ENABLED: "true",
+		});
+
+		await sendSummaryEmail(
+			{ subject: "Test", sender: "blog@example.com", summary: "A summary." },
+			env,
+			"dedup-tts-3",
+		);
+
+		const resendCall = fetchMock.mock.calls.find(
+			([input]) => typeof input === "string" && input.includes("resend.com"),
+		);
+		expect(resendCall).toBeTruthy();
+		const resendBody = JSON.parse(resendCall![1]!.body as string);
+		expect(resendBody.attachments).toBeUndefined();
+		expect(consoleSpy).toHaveBeenCalledWith(
+			"TTS audio generation failed:",
+			expect.any(Error),
+		);
+		consoleSpy.mockRestore();
+	});
+
+	it("skips TTS when TTS_ENABLED is not 'true'", async () => {
+		fetchMock.mockResolvedValue(
+			new Response(JSON.stringify({ id: "email_1" }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+
+		const env = createEnv({
+			OPENAI_API_KEY: "openai-key",
+			// TTS_ENABLED not set
+		});
+
+		await sendSummaryEmail(
+			{ subject: "Test", sender: "blog@example.com", summary: "A summary." },
+			env,
+			"dedup-tts-4",
+		);
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock.mock.calls[0][0]).toContain("resend.com");
 	});
 });
