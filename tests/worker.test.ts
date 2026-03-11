@@ -1051,6 +1051,7 @@ describe("TTS audio generation", () => {
 			voice: "alloy",
 			input: "Hello world",
 			response_format: "mp3",
+			speed: 1,
 		});
 		expect(init!.headers).toMatchObject({
 			Authorization: "Bearer openai-key-123",
