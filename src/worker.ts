@@ -600,9 +600,12 @@ export function renderSummaryHtml(input: {
 			)
 			.join("");
 
+	const audioLink = input.audioUrl
+		? ` · <a href="${escapeHtml(input.audioUrl)}" style="color:#9a6b2f;">&#x1F3A7; Listen to summary</a>`
+		: "";
 	const articleLink = input.articleUrl
-		? `<p style="margin:0 0 24px; line-height:1.6; color:#4b5563;">From ${escapeHtml(input.sender)} · <a href="${escapeHtml(input.articleUrl)}" style="color:#9a6b2f;">Read original</a></p>`
-		: `<p style="margin:0 0 24px; line-height:1.6; color:#4b5563;">From ${escapeHtml(input.sender)}</p>`;
+		? `<p style="margin:0 0 24px; line-height:1.6; color:#4b5563;">From ${escapeHtml(input.sender)} · <a href="${escapeHtml(input.articleUrl)}" style="color:#9a6b2f;">&#x1F517; Read original</a>${audioLink}</p>`
+		: `<p style="margin:0 0 24px; line-height:1.6; color:#4b5563;">From ${escapeHtml(input.sender)}${audioLink}</p>`;
 
 	return `<!doctype html>
 <html lang="en">
@@ -611,7 +614,7 @@ export function renderSummaryHtml(input: {
       <p style="margin:0 0 12px; font-size:12px; letter-spacing:0.12em; text-transform:uppercase; color:#9a6b2f;">${summaryPrefix}</p>
       <h1 style="margin:0 0 12px; font-size:30px; line-height:1.2; color:#111827;">${escapeHtml(input.subject)}</h1>
       ${articleLink}
-      ${renderParagraphs(input.summary)}${input.audioUrl ? `\n      <p style="margin:16px 0 0; line-height:1.6;"><a href="${escapeHtml(input.audioUrl)}" style="color:#9a6b2f;">&#x1F3A7; Listen to summary</a></p>` : ""}
+      ${renderParagraphs(input.summary)}
     </div>
   </body>
 </html>`;
