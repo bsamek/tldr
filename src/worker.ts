@@ -15,6 +15,7 @@ export interface Env {
 	TTS_ENABLED?: string;
 	TTS_AUDIO_BUCKET?: R2Bucket;
 	TTS_AUDIO_PUBLIC_URL?: string;
+	TTS_SPEED?: string;
 }
 
 export interface RssFeedConfig {
@@ -55,6 +56,7 @@ const SUMMARY_MODEL = "claude-sonnet-4-6";
 const SUMMARY_MAX_OUTPUT_TOKENS = 1024;
 const TTS_MODEL = "tts-1";
 const TTS_VOICE = "alloy";
+const TTS_DEFAULT_SPEED = 1.0;
 
 const FOOTER_BREAK_PATTERNS = [
 	/^\s*unsubscribe\b/i,
@@ -473,9 +475,11 @@ export async function sendSummaryEmail(
 
 	if (env.TTS_ENABLED === "true" && env.OPENAI_API_KEY) {
 		try {
+			const speed = env.TTS_SPEED ? parseFloat(env.TTS_SPEED) : TTS_DEFAULT_SPEED;
 			const audioBuffer = await generateTtsAudio(
 				input.summary,
 				env.OPENAI_API_KEY,
+				speed,
 			);
 			if (env.TTS_AUDIO_BUCKET && env.TTS_AUDIO_PUBLIC_URL) {
 				audioUrl = await uploadTtsAudio(
@@ -558,6 +562,7 @@ export async function uploadTtsAudio(
 export async function generateTtsAudio(
 	text: string,
 	apiKey: string,
+	speed: number = TTS_DEFAULT_SPEED,
 ): Promise<ArrayBuffer> {
 	const resp = await fetch("https://api.openai.com/v1/audio/speech", {
 		method: "POST",
@@ -570,6 +575,7 @@ export async function generateTtsAudio(
 			voice: TTS_VOICE,
 			input: text,
 			response_format: "mp3",
+			speed,
 		}),
 	});
 

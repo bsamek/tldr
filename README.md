@@ -97,6 +97,13 @@ npx wrangler secret put TTS_AUDIO_PUBLIC_URL
 # Enter: https://your-r2-public-domain.com (the public base URL of the bucket)
 ```
 
+Optionally set a playback speed (0.25–4.0, default 1.0):
+
+```sh
+npx wrangler secret put TTS_SPEED
+# Enter: 1.2
+```
+
 When configured, each summary email will include a "🎧 Listen to summary" link next to the "🔗 Read original" link at the top of the email. The default voice is `alloy` — you can change it by modifying the `TTS_VOICE` constant in `src/worker.ts` (options: alloy, echo, fable, onyx, nova, shimmer). Pricing is ~$0.00005 per summary ($15 per 1M characters). If TTS generation or upload fails, the email is still sent without the audio link.
 
 ### 5. Configure RSS feeds (optional)
